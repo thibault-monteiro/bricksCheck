@@ -120,7 +120,7 @@ async function handleProjects(projects) {
 
   if (shouldNotify) {
     await clearNotifications();
-    notificationCount = await notifyProjects(matches);
+    notificationCount = await notifyProjects(matches, options);
   }
 
   const lastCheck = await saveLastCheck({
@@ -225,14 +225,20 @@ function shouldNotifyProject(project, options) {
   return Number(project.ownedBricks || 0) < Number(options.ownedThreshold);
 }
 
-async function notifyProjects(matches) {
+async function notifyProjects(matches, options) {
   let createdCount = 0;
 
   for (const project of matches) {
     const notificationId = `bricks-${Date.now()}-${createdCount}-${project.id || "project"}`;
+    const ownedBricks = Math.max(0, Number(project.ownedBricks || 0));
     const availableBricks = Math.max(0, Number(project.availableBricks || 0));
+    const missingBricks = Math.max(0, Number(options.ownedThreshold) - ownedBricks);
+    const buyableBricks = Math.min(missingBricks, availableBricks);
     const title = project.name;
-    const message = `${formatInteger(availableBricks)} ${availableBricks > 1 ? "briques" : "brique"} disponibles`;
+    const message =
+      buyableBricks > 0
+        ? `Achetez-en ${formatInteger(buyableBricks)} (${formatInteger(ownedBricks)}/${formatInteger(options.ownedThreshold)}, ${formatInteger(availableBricks)} dispo)`
+        : `${formatInteger(availableBricks)} ${availableBricks > 1 ? "briques" : "brique"} disponibles`;
 
     await chrome.notifications.create(notificationId, {
       type: "basic",

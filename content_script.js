@@ -39,7 +39,7 @@ function extractProjectFromInvestButton(investNode) {
   const text = normalizeText(card.innerText || card.textContent || "");
   const funding = extractFundingAmounts(text);
   const name = extractProjectsPageProjectName(text);
-  const ownedBricks = extractOwnedBricks(text);
+  const ownedBricks = extractOwnedBricks(text, name);
 
   if (!name || !funding) {
     return null;
@@ -89,12 +89,13 @@ function extractProjectFromStatus(statusNode) {
   const text = normalizeText(card.innerText || card.textContent || "");
   const funding = extractFundingAmounts(text);
   const availableAmount = funding ? Math.max(0, funding.targetAmount - funding.investedAmount) : 0;
-  const ownedBricks = extractOwnedBricks(text);
   const name = extractProjectName(text);
 
   if (!name) {
     return null;
   }
+
+  const ownedBricks = extractOwnedBricks(text, name);
 
   return {
     id: slugify(name),
@@ -128,7 +129,7 @@ function findCard(statusNode) {
   return statusNode.closest("a, article, li, [role='group']") || statusNode.parentElement;
 }
 
-function extractOwnedBricks(text) {
+function extractOwnedBricks(text, projectName = "") {
   const brickMatch = text.match(/(\d[\d\s]*)\s*(?:🧱|brique)/i);
   if (brickMatch) {
     return toNumber(brickMatch[1]);
@@ -138,6 +139,24 @@ function extractOwnedBricks(text) {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
+
+  const projectLineIndex = lines.findIndex((line) => {
+    const normalizedLine = normalizeProjectName(line);
+    const normalizedProjectName = normalizeProjectName(projectName);
+    return normalizedProjectName && (normalizedLine === normalizedProjectName || normalizedLine.includes(normalizedProjectName));
+  });
+
+  if (projectLineIndex > 0) {
+    const preTitleNumbers = lines
+      .slice(0, projectLineIndex)
+      .filter((line) => /^\d[\d\s]*$/.test(line))
+      .map(toNumber)
+      .filter((value) => value > 0 && value <= 1000);
+
+    if (preTitleNumbers.length > 0) {
+      return preTitleNumbers[preTitleNumbers.length - 1];
+    }
+  }
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
