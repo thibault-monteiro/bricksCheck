@@ -33,12 +33,11 @@ function scanProjectsPage() {
   const projects = investNodes.map(extractProjectFromInvestButton).filter(Boolean);
 
   // Detect if the SPA has fully rendered: check for brick images (incl. lazy-loaded)
-  // or if any project already has ownedBricks > 0 via text fallback
-  const hasBrickImages = document.querySelectorAll(BRICK_IMG_SELECTOR).length > 0;
-  const hasAnyOwnedBricks = projects.some((p) => p.ownedBricks > 0);
-  const pageReady = projects.length === 0 || hasBrickImages || hasAnyOwnedBricks;
+  // If cards exist but no brick badges are detectable, the page may not be ready
+  const hasAnyKnownBricks = projects.some((p) => p.ownedBricks !== null);
+  const pageReady = projects.length === 0 || hasAnyKnownBricks;
   if (!pageReady) {
-    console.log('[BricksCheck] Page not ready: found', projects.length, 'cards but 0 brick images and 0 owned bricks');
+    console.log('[BricksCheck] Page not ready: found', projects.length, 'cards but all ownedBricks are null (unknown)');
   }
 
   return { projects, pageReady };
@@ -211,37 +210,14 @@ function extractOwnedBricksFromProjectsCard(card, projectName = "") {
       break;
     }
 
-    // Text fallback at this level: look for a number before the project name
-    const textValue = extractOwnedBricksFromText(searchRoot, projectName);
-    if (textValue > 0) {
-      console.log(`[BricksCheck] Text fallback found ${textValue} at level ${level}`);
-      return textValue;
-    }
-
     if (!searchRoot.parentElement) break;
     searchRoot = searchRoot.parentElement;
   }
 
-  return 0;
-}
-
-function extractOwnedBricksFromText(element, projectName) {
-  const text = normalizeText(element.innerText || element.textContent || "");
-  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
-  const nameLineIndex = findProjectNameLineIndex(lines, projectName);
-
-  if (nameLineIndex <= 0) {
-    return 0;
-  }
-
-  const valuesBeforeName = lines
-    .slice(0, nameLineIndex)
-    .map((line) => line.match(/^\s*(\d{1,3})\s*$/))
-    .filter(Boolean)
-    .map((match) => toNumber(match[1]))
-    .filter((value) => value > 0 && value <= 1000);
-
-  return valuesBeforeName.length > 0 ? valuesBeforeName[valuesBeforeName.length - 1] : 0;
+  // No brick badge found — return null (unknown) instead of 0.
+  // This avoids false notifications when images haven't loaded (background tab).
+  console.log('[BricksCheck] No brick badge found for', projectName, '=> ownedBricks: null (unknown)');
+  return null;
 }
 
 function extractValueNearBrickImage(img) {

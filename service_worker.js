@@ -252,7 +252,13 @@ function shouldNotifyProject(project, options) {
     return true;
   }
 
-  return Number(project.ownedBricks || 0) < Number(options.ownedThreshold);
+  // ownedBricks === null means we couldn't detect the badge (e.g. background tab).
+  // Don't notify — better to miss than send a false alarm.
+  if (project.ownedBricks === null || project.ownedBricks === undefined) {
+    return false;
+  }
+
+  return Number(project.ownedBricks) < Number(options.ownedThreshold);
 }
 
 async function notifyProjects(matches, options) {
@@ -477,7 +483,7 @@ function dedupeProjects(projects) {
 
 function getProjectDataScore(project) {
   let score = 0;
-  if (Number(project.ownedBricks || 0) > 0) {
+  if (project.ownedBricks !== null && project.ownedBricks !== undefined && Number(project.ownedBricks) > 0) {
     score += 3;
   }
   if (Number(project.availableBricks || 0) > 1) {
