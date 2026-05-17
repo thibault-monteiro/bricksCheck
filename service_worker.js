@@ -111,6 +111,8 @@ async function syncAlarm() {
 
 function scheduleShortInterval(intervalMs) {
   clearShortInterval();
+  const nextCheckAt = Date.now() + intervalMs;
+  chrome.storage.local.set({ nextCheckAt });
   shortIntervalTimerId = setTimeout(async () => {
     await runCheck();
     const options = await getOptions();
@@ -125,6 +127,7 @@ function clearShortInterval() {
     clearTimeout(shortIntervalTimerId);
     shortIntervalTimerId = null;
   }
+  chrome.storage.local.remove("nextCheckAt");
 }
 
 async function runCheck() {
@@ -183,12 +186,12 @@ async function getStatus() {
   const [options, alarm, localState] = await Promise.all([
     getOptions(),
     chrome.alarms.get(ALARM_NAME),
-    chrome.storage.local.get("lastCheck")
+    chrome.storage.local.get(["lastCheck", "nextCheckAt"])
   ]);
 
   return {
     enabled: options.enabled,
-    nextCheckAt: alarm?.scheduledTime || null,
+    nextCheckAt: alarm?.scheduledTime || localState.nextCheckAt || null,
     lastCheck: localState.lastCheck || null
   };
 }
