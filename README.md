@@ -4,6 +4,8 @@ Bricks Check est une extension Chrome Manifest V3 qui surveille la page d'accuei
 
 Elle est pensée pour un usage simple : garder un onglet `https://app.bricks.co` ouvert, laisser l'extension actualiser la page à intervalle régulier, puis recevoir une notification par projet quand le nombre de briques affiché sur la carte reste inférieur à votre objectif.
 
+Bricks Check est une extension indépendante et non officielle. Elle n'est pas affiliée, associée, autorisée, approuvée ni sponsorisée par Bricks.co. Elle ne constitue pas un conseil en investissement.
+
 ## Fonctionnalités
 
 - Surveillance des cartes `Collecte en cours` sur `app.bricks.co`.
@@ -47,6 +49,7 @@ Le `service_worker` planifie les vérifications avec `chrome.alarms`, déclenche
 
 ## Limites
 
+- Bricks Check est un outil de notification personnel, pas un outil de conseil financier ou d'investissement.
 - Un onglet `https://app.bricks.co` doit rester ouvert pour que l'extension puisse lire les projets.
 - L'ouverture du projet au clic dépend de la structure HTML de Bricks.co. Si le site change fortement, l'extraction peut nécessiter une mise à jour.
 - Les notifications sont envoyées à chaque vérification tant que les conditions sont remplies.
