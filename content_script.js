@@ -1,10 +1,12 @@
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "SCAN_BRICKS_PAGE") {
     sendResponse({ projects: scanProjects() });
+    return false;
   }
 
   if (message?.type === "CLICK_BRICKS_PROJECT") {
     sendResponse({ clicked: clickProjectByName(message.projectName || "") });
+    return false;
   }
 
   return false;
@@ -33,13 +35,16 @@ function scanProjectsPage() {
 function extractProjectFromInvestButton(investNode) {
   const card = findProjectCardFromInvestButton(investNode);
   if (!card) {
+    console.log('[BricksCheck] No card found for invest button');
     return null;
   }
 
   const text = normalizeText(card.innerText || card.textContent || "");
   const funding = extractFundingAmounts(text);
   const name = extractProjectsPageProjectName(text);
-  const ownedBricks = extractOwnedBricks(text, name);
+  console.log('[BricksCheck] Card found for:', name, '| card tag:', card.tagName, '| card HTML length:', card.innerHTML.length);
+  const ownedBricks = extractOwnedBricksFromProjectsCard(card, name);
+  console.log('[BricksCheck] Result for', name, '=> ownedBricks:', ownedBricks);
 
   if (!name || !funding) {
     return null;
@@ -95,7 +100,7 @@ function extractProjectFromStatus(statusNode) {
     return null;
   }
 
-  const ownedBricks = extractOwnedBricks(text, name);
+  const ownedBricks = extractOwnedBricksFromProjectsCard(card, name) || extractOwnedBricks(text, name);
 
   return {
     id: slugify(name),
@@ -167,16 +172,89 @@ function extractOwnedBricks(text, projectName = "") {
     }
   }
 
-  const smallNumericLines = lines
-    .filter((line) => /^\d[\d\s]*$/.test(line))
-    .map(toNumber)
-    .filter((value) => value > 0 && value <= 1000);
+  return 0;
+}
 
-  if (smallNumericLines.length > 0) {
-    return Math.min(...smallNumericLines);
+function extractOwnedBricksFromProjectsCard(card, projectName = "") {
+  // Le badge bricks (nombre + icône bricks.png) peut être en dehors du "card"
+  // trouvé par findProjectCardFromInvestButton (zone texte uniquement).
+  // On remonte progressivement dans le DOM pour trouver le conteneur complet.
+  let searchRoot = card;
+  for (let level = 0; level < 4; level++) {
+    const brickImages = searchRoot.querySelectorAll('img[src*="/bricks."]');
+    const allImages = searchRoot.querySelectorAll('img');
+    const allImgSrcs = [...allImages].map(i => i.src).slice(0, 5);
+    console.log(`[BricksCheck] Level ${level}: tag=<${searchRoot.tagName}> brickImgs=${brickImages.length} totalImgs=${allImages.length} srcs=`, allImgSrcs);
+
+    if (brickImages.length === 1) {
+      console.log('[BricksCheck] Found 1 brick img:', brickImages[0].src);
+      const value = extractValueNearBrickImage(brickImages[0]);
+      console.log('[BricksCheck] extractValueNearBrickImage =>', value);
+      if (value > 0) return value;
+    } else if (brickImages.length > 1) {
+      console.log('[BricksCheck] Too many brick imgs, stopping');
+      break;
+    }
+
+    if (!searchRoot.parentElement) break;
+    searchRoot = searchRoot.parentElement;
   }
 
+  // Fallback texte : lignes avant le nom du projet
+  const text = normalizeText(card.innerText || card.textContent || "");
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const nameLineIndex = findProjectNameLineIndex(lines, projectName);
+
+  if (nameLineIndex <= 0) {
+    return 0;
+  }
+
+  const valuesBeforeName = lines
+    .slice(0, nameLineIndex)
+    .map((line) => line.match(/^\s*(\d{1,3})\s*$/))
+    .filter(Boolean)
+    .map((match) => toNumber(match[1]))
+    .filter((value) => value > 0 && value <= 1000);
+
+  return valuesBeforeName.length > 0 ? valuesBeforeName[valuesBeforeName.length - 1] : 0;
+}
+
+function extractValueNearBrickImage(img) {
+  // Remonte depuis l'img pour trouver le <p> avec le nombre de briques
+  // DOM attendu : div.badge > p "50" + div > div(bg) + img
+  let container = img.parentElement;
+  for (let depth = 0; depth < 3 && container; depth++) {
+    const p = container.querySelector("p");
+    console.log(`[BricksCheck] extractValue depth=${depth} tag=<${container.tagName}> p=${p ? '"' + p.textContent.trim() + '"' : 'null'} containerHTML=${container.outerHTML.slice(0, 200)}`);
+    if (p && /^\s*\d+\s*$/.test(p.textContent)) {
+      const value = toNumber(p.textContent.trim());
+      console.log('[BricksCheck] Found numeric p:', value, 'passes filter:', value > 0 && value <= 1000);
+      if (value > 0 && value <= 1000) {
+        return value;
+      }
+    }
+    container = container.parentElement;
+  }
+  console.log('[BricksCheck] extractValueNearBrickImage: no value found after 3 levels');
   return 0;
+}
+
+function findProjectNameLineIndex(lines, projectName = "") {
+  const normalizedProjectName = normalizeProjectName(projectName);
+  return lines.findIndex((line) => {
+    const normalizedLine = normalizeProjectName(line);
+    if (!normalizedLine || /^\d/.test(line)) {
+      return false;
+    }
+    if (normalizedProjectName) {
+      return (
+        normalizedLine === normalizedProjectName ||
+        normalizedLine.includes(normalizedProjectName) ||
+        normalizedProjectName.includes(normalizedLine)
+      );
+    }
+    return /[a-zA-ZÀ-ÿ]{4,}/.test(line);
+  });
 }
 
 function extractProjectsPageProjectName(text) {

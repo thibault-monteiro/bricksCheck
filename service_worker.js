@@ -1,4 +1,6 @@
 const ALARM_NAME = "bricks-check";
+const CLEAR_NOTIFICATION_ALARM_PREFIX = "bricks-clear-notification:";
+const NOTIFICATION_TTL_MINUTES = 0.5;
 
 const DEFAULT_OPTIONS = {
   enabled: false,
@@ -27,6 +29,11 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAME) {
     runCheck();
+    return;
+  }
+
+  if (alarm.name.startsWith(CLEAR_NOTIFICATION_ALARM_PREFIX)) {
+    clearNotificationById(alarm.name.slice(CLEAR_NOTIFICATION_ALARM_PREFIX.length));
   }
 });
 
@@ -156,10 +163,14 @@ async function getStatus() {
 }
 
 async function scanOpenBricksTabs({ reloadBeforeCheck = true } = {}) {
-  const tabs = await chrome.tabs.query({ url: "https://app.bricks.co/*" });
-  if (tabs.length === 0) {
+  const allTabs = await chrome.tabs.query({ url: "https://app.bricks.co/*" });
+  if (allTabs.length === 0) {
     return [];
   }
+
+  // Priorité : premier onglet épinglé, sinon tous les onglets
+  const pinnedTab = allTabs.find((tab) => tab.pinned);
+  const tabs = pinnedTab ? [pinnedTab] : allTabs;
 
   if (reloadBeforeCheck) {
     await Promise.all(tabs.map((tab) => reloadTabAndWait(tab.id)));
@@ -248,6 +259,7 @@ async function notifyProjects(matches, options) {
       priority: 2
     });
 
+    await trackNotification(notificationId);
     await saveNotificationTarget(notificationId, {
       projectName: project.name,
       tabId: project.tabId,
@@ -260,23 +272,29 @@ async function notifyProjects(matches, options) {
 }
 
 async function clearNotifications() {
-  const [{ notificationLinks = {} }, activeNotifications] = await Promise.all([
-    chrome.storage.local.get("notificationLinks"),
+  const [{ notificationLinks = {}, notificationIds = [] }, activeNotifications] = await Promise.all([
+    chrome.storage.local.get(["notificationLinks", "notificationIds"]),
     chrome.notifications.getAll()
   ]);
-  const notificationIds = [...new Set([...Object.keys(notificationLinks), ...Object.keys(activeNotifications)])];
+  const idsToClear = [...new Set([...notificationIds, ...Object.keys(notificationLinks), ...Object.keys(activeNotifications)])];
   let clearedCount = 0;
 
   await Promise.all(
-    notificationIds.map(async (notificationId) => {
+    idsToClear.map(async (notificationId) => {
       if (await chrome.notifications.clear(notificationId)) {
         clearedCount += 1;
       }
+      await chrome.alarms.clear(getClearNotificationAlarmName(notificationId));
     })
   );
 
-  await chrome.storage.local.set({ notificationLinks: {} });
+  await chrome.storage.local.set({ notificationLinks: {}, notificationIds: [] });
   return clearedCount;
+}
+
+async function clearNotificationById(notificationId) {
+  await chrome.notifications.clear(notificationId);
+  await deleteNotificationState(notificationId);
 }
 
 async function saveLastCheck(lastCheck) {
@@ -294,6 +312,16 @@ async function saveNotificationTarget(notificationId, target) {
   });
 }
 
+async function trackNotification(notificationId) {
+  const { notificationIds = [] } = await chrome.storage.local.get("notificationIds");
+  await chrome.storage.local.set({
+    notificationIds: [...new Set([...notificationIds, notificationId])]
+  });
+  chrome.alarms.create(getClearNotificationAlarmName(notificationId), {
+    delayInMinutes: NOTIFICATION_TTL_MINUTES
+  });
+}
+
 async function deleteNotificationLink(notificationId) {
   const { notificationLinks = {} } = await chrome.storage.local.get("notificationLinks");
   if (!notificationLinks[notificationId]) {
@@ -304,10 +332,23 @@ async function deleteNotificationLink(notificationId) {
   await chrome.storage.local.set({ notificationLinks });
 }
 
+async function deleteNotificationState(notificationId) {
+  const { notificationLinks = {}, notificationIds = [] } = await chrome.storage.local.get([
+    "notificationLinks",
+    "notificationIds"
+  ]);
+  delete notificationLinks[notificationId];
+  await chrome.storage.local.set({
+    notificationLinks,
+    notificationIds: notificationIds.filter((id) => id !== notificationId)
+  });
+  await chrome.alarms.clear(getClearNotificationAlarmName(notificationId));
+}
+
 async function openNotificationProject(notificationId) {
   const { notificationLinks = {} } = await chrome.storage.local.get("notificationLinks");
   const target = normalizeNotificationTarget(notificationLinks[notificationId]);
-  await deleteNotificationLink(notificationId);
+  await deleteNotificationState(notificationId);
   await chrome.notifications.clear(notificationId);
 
   if (!target) {
@@ -320,6 +361,10 @@ async function openNotificationProject(notificationId) {
   }
 
   await openProjectFromNewBricksTab(target.projectName);
+}
+
+function getClearNotificationAlarmName(notificationId) {
+  return `${CLEAR_NOTIFICATION_ALARM_PREFIX}${notificationId}`;
 }
 
 async function openProjectFromNewBricksTab(projectName) {
@@ -413,6 +458,9 @@ function dedupeProjects(projects) {
 
 function getProjectDataScore(project) {
   let score = 0;
+  if (Number(project.ownedBricks || 0) > 0) {
+    score += 3;
+  }
   if (Number(project.availableBricks || 0) > 1) {
     score += 2;
   }
