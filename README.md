@@ -1,18 +1,18 @@
 # Bricks Check
 
-Bricks Check est une extension Chrome Manifest V3 qui surveille la page d'accueil de Bricks.co et envoie des notifications quand des projets en collecte correspondent à votre seuil de briques.
+Bricks Check est une extension Chrome Manifest V3 qui surveille les projets en collecte sur Bricks.co et envoie des notifications quand le nombre de briques disponibles correspond à votre seuil.
 
-Elle est pensée pour un usage simple : garder un onglet `https://app.bricks.co` ouvert, laisser l'extension actualiser la page à intervalle régulier, puis recevoir une notification par projet quand le nombre de briques affiché sur la carte reste inférieur à votre objectif.
+Elle est pensée pour un usage simple : garder un onglet `https://app.bricks.co` ouvert, laisser l'extension interroger l'API Bricks à intervalle régulier, puis recevoir une notification par projet quand votre nombre de briques reste inférieur à votre objectif.
 
 Bricks Check est une extension indépendante et non officielle. Elle n'est pas affiliée, associée, autorisée, approuvée ni sponsorisée par Bricks.co. Elle ne constitue pas un conseil en investissement.
 
 ## Fonctionnalités
 
-- Surveillance des cartes `Collecte en cours` sur `app.bricks.co`.
-- Lecture enrichie de `https://app.bricks.co/projects` pour calculer les briques disponibles à partir du montant investi et du montant total.
+- Récupération des projets via l'API Bricks (`api.bricks.co`), avec fallback sur la lecture DOM des cartes si l'API n'est pas disponible.
+- Calcul des briques disponibles à partir du catalogue et du portefeuille investisseur.
+- Cache local des briques possédées (TTL 6 h) pour éviter les fausses notifications quand le nombre de briques est temporairement inconnu.
 - Seuil configurable, par défaut `100` briques.
 - Vérification automatique toutes les minutes par défaut.
-- Option pour actualiser l'onglet Bricks avant chaque vérification.
 - Une notification Chrome par projet correspondant.
 - Le clic sur une notification ouvre un nouvel onglet Bricks et tente d'ouvrir le projet concerné.
 - Compteur dans le popup pour voir la prochaine vérification.
@@ -31,33 +31,36 @@ Bricks Check est une extension indépendante et non officielle. Elle n'est pas a
 - `Seuil personnel` : nombre de briques à atteindre sur chaque projet.
 - `Intervalle` : fréquence de vérification.
 - `Notifier si...` : déclenche les notifications quand un projet a des briques disponibles et que votre nombre de briques est inférieur au seuil.
-- `Actualiser l'onglet Bricks...` : recharge la page Bricks avant de lire les cartes.
 
 ## Fonctionnement technique
 
-L'extension utilise un `content_script` injecté uniquement sur `https://app.bricks.co/*`. Ce script lit les cartes visibles dans la page, détecte les badges `Collecte en cours`, extrait le nom du projet et le nombre de briques affiché sur la carte.
+L'extension injecte deux scripts sur `https://app.bricks.co/*` :
 
-Le `service_worker` planifie les vérifications avec `chrome.alarms`, déclenche les notifications avec `chrome.notifications`, et ouvre un nouvel onglet quand une notification est cliquée.
+1. **`api_bridge.js`** (monde `MAIN`, `document_start`) — lit le token d'authentification Bricks depuis le `localStorage`/`sessionStorage` du site et interroge l'API Bricks (`/projects` et `/investor/portfolio/properties`) pour obtenir le catalogue de projets et le portefeuille de l'investisseur. La communication avec le content script se fait par `window.postMessage`.
+2. **`content_script.js`** (monde isolé) — transmet les résultats de l'API au service worker. En cas d'échec de l'API, il se rabat sur la lecture DOM des cartes visibles dans la page (badges `Collecte en cours`, nombre de briques affiché).
+
+Le `service_worker` planifie les vérifications avec `chrome.alarms`, tente d'abord un scan API puis un scan DOM en fallback, maintient un cache local des briques possédées, déclenche les notifications avec `chrome.notifications`, et ouvre un nouvel onglet quand une notification est cliquée.
 
 ## Sécurité et confidentialité
 
 - Aucun token GitHub, mot de passe, cookie, clé privée ou secret n'est stocké dans le dépôt.
-- L'extension ne contient pas de serveur distant, pas de télémétrie et pas d'appel vers un service tiers.
-- Les permissions sont limitées aux besoins de l'extension : alarmes, notifications, stockage local/sync, onglets, et accès à `https://app.bricks.co/*`.
-- Les réglages sont stockés via l'API Chrome `storage`.
-- L'extension lit uniquement le contenu visible de la page Bricks ouverte dans votre navigateur.
+- L'extension communique uniquement avec les domaines Bricks (`app.bricks.co` et `api.bricks.co`). Elle ne contient pas de télémétrie et n'appelle aucun service tiers.
+- Les appels à l'API Bricks réutilisent le token d'authentification déjà présent dans le navigateur de l'utilisateur (session Bricks active). Aucun identifiant n'est stocké par l'extension.
+- Les permissions sont limitées aux besoins de l'extension : alarmes, notifications, stockage local/sync, onglets, et accès à `https://app.bricks.co/*` et `https://api.bricks.co/*`.
+- Les réglages et le cache des briques possédées sont stockés via l'API Chrome `storage`.
 - Elle ne collecte pas volontairement de données personnelles et ne les transmet nulle part.
 
 ## Limites
 
 - Bricks Check est un outil de notification personnel, pas un outil de conseil financier ou d'investissement.
-- Un onglet `https://app.bricks.co` doit rester ouvert pour que l'extension puisse lire les projets.
-- L'ouverture du projet au clic dépend de la structure HTML de Bricks.co. Si le site change fortement, l'extraction peut nécessiter une mise à jour.
+- Un onglet `https://app.bricks.co` doit rester ouvert (et l'utilisateur connecté) pour que l'extension puisse interroger l'API.
+- Si l'API Bricks change ou devient inaccessible, l'extension se rabat sur la lecture DOM, qui dépend de la structure HTML du site.
 - Les notifications sont envoyées à chaque vérification tant que les conditions sont remplies.
 
 ## Fichiers principaux
 
 - `manifest.json` : configuration de l'extension Chrome.
-- `content_script.js` : lecture des cartes projet dans Bricks.co.
-- `service_worker.js` : planification, notifications et ouverture au clic.
+- `api_bridge.js` : script injecté dans le monde `MAIN` pour interroger l'API Bricks.
+- `content_script.js` : pont entre l'API bridge et le service worker, avec fallback DOM.
+- `service_worker.js` : planification, scan API/DOM, cache, notifications et ouverture au clic.
 - `popup.html`, `popup.css`, `popup.js` : interface de réglage.
