@@ -94,7 +94,7 @@ async function runCheck() {
       checkedAt: Date.now(),
       matches: [],
       projectCount: 0,
-      message: "Aucun onglet app.bricks.co lisible. Ouvrez la page d'accueil Bricks."
+      message: "Aucun onglet app.bricks.co lisible. Ouvrez la page Projets Bricks."
     });
   }
 
@@ -224,11 +224,20 @@ async function notifyProjects(matches, options) {
     const notificationId = `bricks-${Date.now()}-${createdCount}-${project.id || "project"}`;
     const ownedBricks = Number(project.ownedBricks || 0);
     const missingBricks = Math.max(0, Number(options.ownedThreshold) - ownedBricks);
-    const title = `${ownedBricks} brique(s) sur ${project.name}`;
-    const message =
+    const availableBricks = Math.max(0, Number(project.availableBricks || 0));
+    const title =
+      availableBricks > 0
+        ? `${formatInteger(availableBricks)} brique(s) disponibles`
+        : `${ownedBricks} brique(s) sur ${project.name}`;
+    const availability =
+      availableBricks > 0
+        ? `${project.name}: ${formatCurrency(project.availableAmount)} restants. `
+        : "";
+    const threshold =
       missingBricks > 0
         ? `Objectif ${options.ownedThreshold}: il vous en manque ${missingBricks}.`
         : `Objectif ${options.ownedThreshold} atteint ou dépassé.`;
+    const message = `${availability}${threshold}`;
 
     await chrome.notifications.create(notificationId, {
       type: "basic",
@@ -293,7 +302,7 @@ async function openNotificationProject(notificationId) {
 }
 
 async function openProjectFromNewBricksTab(projectName) {
-  const tab = await chrome.tabs.create({ url: "https://app.bricks.co/" });
+  const tab = await chrome.tabs.create({ url: "https://app.bricks.co/projects" });
   await waitForTabComplete(tab.id);
   await wait(1500);
 
@@ -357,15 +366,48 @@ function isProjectUrl(url) {
   }
 }
 
+function formatInteger(value) {
+  return new Intl.NumberFormat("fr-FR", {
+    maximumFractionDigits: 0
+  }).format(Number(value || 0));
+}
+
+function formatCurrency(value) {
+  return new Intl.NumberFormat("fr-FR", {
+    maximumFractionDigits: 0,
+    style: "currency",
+    currency: "EUR"
+  }).format(Number(value || 0));
+}
+
 function dedupeProjects(projects) {
-  const seen = new Set();
-  return projects.filter((project) => {
+  const projectByKey = new Map();
+
+  for (const project of projects) {
     const key = project.id || project.name;
-    if (!key || seen.has(key)) {
-      return false;
+    if (!key) {
+      continue;
     }
 
-    seen.add(key);
-    return true;
-  });
+    const previousProject = projectByKey.get(key);
+    if (!previousProject || getProjectDataScore(project) > getProjectDataScore(previousProject)) {
+      projectByKey.set(key, project);
+    }
+  }
+
+  return [...projectByKey.values()];
+}
+
+function getProjectDataScore(project) {
+  let score = 0;
+  if (Number(project.availableBricks || 0) > 1) {
+    score += 2;
+  }
+  if (Number(project.availableAmount || 0) > 0 && Number(project.targetAmount || 0) > 0) {
+    score += 2;
+  }
+  if (isProjectUrl(project.url)) {
+    score += 1;
+  }
+  return score;
 }

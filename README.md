@@ -9,6 +9,7 @@ Bricks Check est une extension indépendante et non officielle. Elle n'est pas a
 ## Fonctionnalités
 
 - Surveillance des cartes `Collecte en cours` sur `app.bricks.co`.
+- Lecture enrichie de `https://app.bricks.co/projects` pour calculer les briques disponibles à partir du montant investi et du montant total.
 - Seuil configurable, par défaut `100` briques.
 - Vérification automatique toutes les minutes par défaut.
 - Option pour actualiser l'onglet Bricks avant chaque vérification.

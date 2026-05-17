@@ -11,11 +11,76 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 function scanProjects() {
+  if (location.pathname.startsWith("/projects")) {
+    const projectsPageProjects = scanProjectsPage();
+    if (projectsPageProjects.length > 0) {
+      return projectsPageProjects;
+    }
+  }
+
   const statusNodes = [...document.querySelectorAll("body *")].filter((element) => {
     return getOwnText(element).toLowerCase().includes("collecte en cours");
   });
 
   return statusNodes.map(extractProjectFromStatus).filter(Boolean);
+}
+
+function scanProjectsPage() {
+  const investNodes = [...document.querySelectorAll("button, a, [role='button'], [role='link']")].filter((element) => {
+    return getOwnText(element).toLowerCase() === "investir";
+  });
+
+  return investNodes.map(extractProjectFromInvestButton).filter(Boolean);
+}
+
+function extractProjectFromInvestButton(investNode) {
+  const card = findProjectCardFromInvestButton(investNode);
+  if (!card) {
+    return null;
+  }
+
+  const text = normalizeText(card.innerText || card.textContent || "");
+  const funding = extractFundingAmounts(text);
+  const name = extractProjectsPageProjectName(text);
+  const ownedBricks = extractOwnedBricks(text);
+
+  if (!name || !funding) {
+    return null;
+  }
+
+  const availableAmount = Math.max(0, funding.targetAmount - funding.investedAmount);
+  const availableBricks = Math.floor(availableAmount / 10);
+
+  return {
+    id: slugify(name),
+    name,
+    availableAmount,
+    availableBricks,
+    brickPrice: 10,
+    investedAmount: funding.investedAmount,
+    targetAmount: funding.targetAmount,
+    ownedBricks,
+    status: "Collecte en cours",
+    url: findProjectUrl(card)
+  };
+}
+
+function findProjectCardFromInvestButton(investNode) {
+  let current = investNode;
+
+  for (let depth = 0; depth < 8 && current?.parentElement; depth += 1) {
+    current = current.parentElement;
+    const text = normalizeText(current.innerText || current.textContent || "");
+    const hasInvestButton = text.toLowerCase().includes("investir");
+    const hasFundingAmounts = Boolean(extractFundingAmounts(text));
+    const hasRate = /\b\d{1,2}(?:[,.]\d{1,2})?\s*%\s*\/\s*an\b/i.test(text);
+
+    if (hasInvestButton && hasFundingAmounts && hasRate) {
+      return current;
+    }
+  }
+
+  return null;
 }
 
 function extractProjectFromStatus(statusNode) {
@@ -85,6 +150,47 @@ function extractOwnedBricks(text) {
   return numberBeforeTitle ? toNumber(numberBeforeTitle[1]) : 0;
 }
 
+function extractProjectsPageProjectName(text) {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/investir/i.test(line))
+    .filter((line) => !/rendement/i.test(line))
+    .filter((line) => !/horizon/i.test(line))
+    .filter((line) => !/^\d{1,2}(?:[,.]\d{1,2})?\s*%\s*\/\s*an$/i.test(line))
+    .filter((line) => !/^\d+\s*an/i.test(line))
+    .filter((line) => !/^\d+\s*mois/i.test(line))
+    .filter((line) => !/^\/?\s*\d[\d\s]*(?:,\d+)?\s*€$/.test(line))
+    .filter((line) => !/^\d[\d\s]*$/.test(line))
+    .filter((line) => !/^\d[\d\s]*(?:🧱|brique)$/i.test(line));
+
+  return lines.find((line) => /[a-zA-ZÀ-ÿ]{4,}/.test(line)) || "";
+}
+
+function extractFundingAmounts(text) {
+  const amounts = [...text.matchAll(/\/?\s*(\d[\d\s]*(?:,\d+)?)\s*€/g)].map((match) => {
+    return {
+      raw: match[0],
+      value: toNumber(match[1]),
+      isTarget: match[0].trim().startsWith("/")
+    };
+  });
+
+  for (let index = 0; index < amounts.length - 1; index += 1) {
+    const current = amounts[index];
+    const next = amounts[index + 1];
+    if (next.isTarget && current.value > 0 && next.value > current.value) {
+      return {
+        investedAmount: current.value,
+        targetAmount: next.value
+      };
+    }
+  }
+
+  return null;
+}
+
 function extractProjectName(text) {
   const lines = text
     .split("\n")
@@ -140,6 +246,32 @@ function clickProjectByName(projectName) {
   const wantedName = normalizeProjectName(projectName);
   if (!wantedName) {
     return false;
+  }
+
+  if (location.pathname.startsWith("/projects")) {
+    const investNodes = [...document.querySelectorAll("button, a, [role='button'], [role='link']")].filter((element) => {
+      return getOwnText(element).toLowerCase() === "investir";
+    });
+
+    for (const investNode of investNodes) {
+      const card = findProjectCardFromInvestButton(investNode);
+      if (!card) {
+        continue;
+      }
+
+      const text = normalizeText(card.innerText || card.textContent || "");
+      const cardName = normalizeProjectName(extractProjectsPageProjectName(text));
+      const namesMatch = cardName === wantedName || cardName.includes(wantedName) || wantedName.includes(cardName);
+
+      if (!namesMatch) {
+        continue;
+      }
+
+      const clickable = findClickableElement(card);
+      clickable.scrollIntoView({ block: "center", inline: "center" });
+      clickable.click();
+      return true;
+    }
   }
 
   const statusNodes = [...document.querySelectorAll("body *")].filter((element) => {
