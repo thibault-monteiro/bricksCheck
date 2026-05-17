@@ -92,7 +92,7 @@ async function syncAlarm() {
 
   chrome.alarms.create(ALARM_NAME, {
     delayInMinutes: 0.1,
-    periodInMinutes: Math.max(1, options.intervalMinutes)
+    periodInMinutes: Math.max(0.5, options.intervalMinutes)
   });
 }
 
@@ -176,21 +176,40 @@ async function scanOpenBricksTabs({ reloadBeforeCheck = true } = {}) {
     await Promise.all(tabs.map((tab) => reloadTabAndWait(tab.id)));
   }
 
-  const projectLists = await Promise.all(
-    tabs.map(async (tab) => {
-      try {
-        const response = await chrome.tabs.sendMessage(tab.id, { type: "SCAN_BRICKS_PAGE" });
-        return (response?.projects || []).map((project) => ({
-          ...project,
-          tabId: tab.id
-        }));
-      } catch {
-        return [];
-      }
-    })
-  );
+  const scanTabs = async () => {
+    let allReady = true;
+    const projectLists = await Promise.all(
+      tabs.map(async (tab) => {
+        try {
+          const response = await chrome.tabs.sendMessage(tab.id, { type: "SCAN_BRICKS_PAGE" });
+          if (response?.pageReady === false) {
+            allReady = false;
+          }
+          return (response?.projects || []).map((project) => ({
+            ...project,
+            tabId: tab.id
+          }));
+        } catch {
+          return [];
+        }
+      })
+    );
+    return { projects: projectLists.flat(), allReady };
+  };
 
-  return dedupeProjects(projectLists.flat());
+  let { projects, allReady } = await scanTabs();
+
+  // If the SPA hasn't finished rendering (cards found but no brick images), retry
+  if (!allReady && projects.length > 0) {
+    console.log("[BricksCheck] Page not ready, retrying scan in 3s...");
+    await wait(3000);
+    ({ projects, allReady } = await scanTabs());
+    if (!allReady) {
+      console.log("[BricksCheck] Page still not ready after retry, using available data");
+    }
+  }
+
+  return dedupeProjects(projects);
 }
 
 async function reloadTabAndWait(tabId) {

@@ -1,6 +1,7 @@
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "SCAN_BRICKS_PAGE") {
-    sendResponse({ projects: scanProjects() });
+    const result = scanProjects();
+    sendResponse(result);
     return false;
   }
 
@@ -21,7 +22,7 @@ function scanProjects() {
     return getOwnText(element).toLowerCase().includes("collecte en cours");
   });
 
-  return statusNodes.map(extractProjectFromStatus).filter(Boolean);
+  return { projects: statusNodes.map(extractProjectFromStatus).filter(Boolean), pageReady: true };
 }
 
 function scanProjectsPage() {
@@ -29,7 +30,17 @@ function scanProjectsPage() {
     return normalizeText(element.innerText || element.textContent || "").toLowerCase() === "investir";
   });
 
-  return investNodes.map(extractProjectFromInvestButton).filter(Boolean);
+  const projects = investNodes.map(extractProjectFromInvestButton).filter(Boolean);
+
+  // Detect if the SPA has fully rendered: if we found cards but zero brick images
+  // anywhere on the page, React hasn't finished rendering yet
+  const hasBrickImages = document.querySelectorAll('img[src*="/bricks."]').length > 0;
+  const pageReady = projects.length === 0 || hasBrickImages;
+  if (!pageReady) {
+    console.log('[BricksCheck] Page not ready: found', projects.length, 'cards but 0 brick images on page');
+  }
+
+  return { projects, pageReady };
 }
 
 function extractProjectFromInvestButton(investNode) {
