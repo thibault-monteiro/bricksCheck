@@ -1,6 +1,8 @@
 const ALARM_NAME = "bricks-check";
 const CLEAR_NOTIFICATION_ALARM_PREFIX = "bricks-clear-notification:";
 const NOTIFICATION_TTL_MINUTES = 0.5;
+const OWNED_BRICKS_CACHE_KEY = "ownedBricksByProject";
+const OWNED_BRICKS_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 const DEFAULT_OPTIONS = {
   enabled: false,
@@ -172,26 +174,29 @@ async function scanOpenBricksTabs({ reloadBeforeCheck = true } = {}) {
   const pinnedTab = allTabs.find((tab) => tab.pinned);
   const tabs = pinnedTab ? [pinnedTab] : allTabs;
 
+  const apiScan = await fetchProjectsFromApiTabs(tabs);
+  if (apiScan.ok) {
+    return applyOwnedBricksCache(dedupeProjects(apiScan.projects));
+  }
+
+  console.log("[BricksCheck] API scan unavailable, falling back to DOM scan");
+
   if (reloadBeforeCheck) {
-    await Promise.all(tabs.map((tab) => reloadTabAndWait(tab.id)));
+    console.log("[BricksCheck] Reload skipped: API scan is the primary source, DOM scan is fallback only");
   }
 
   const scanTabs = async () => {
     let allReady = true;
     const projectLists = await Promise.all(
       tabs.map(async (tab) => {
-        try {
-          const response = await chrome.tabs.sendMessage(tab.id, { type: "SCAN_BRICKS_PAGE" });
-          if (response?.pageReady === false) {
-            allReady = false;
-          }
-          return (response?.projects || []).map((project) => ({
-            ...project,
-            tabId: tab.id
-          }));
-        } catch {
-          return [];
+        const response = await scanTab(tab.id);
+        if (response?.pageReady === false) {
+          allReady = false;
         }
+        return (response?.projects || []).map((project) => ({
+          ...project,
+          tabId: tab.id
+        }));
       })
     );
     return { projects: projectLists.flat(), allReady };
@@ -199,7 +204,8 @@ async function scanOpenBricksTabs({ reloadBeforeCheck = true } = {}) {
 
   let { projects, allReady } = await scanTabs();
 
-  // If the SPA hasn't finished rendering (cards found but no brick images), retry
+  // DOM fallback only: if the SPA hasn't finished rendering (cards found but no
+  // brick images), retry once before using the available data.
   if (!allReady && projects.length > 0) {
     console.log("[BricksCheck] Page not ready, retrying scan in 3s...");
     await wait(3000);
@@ -209,13 +215,45 @@ async function scanOpenBricksTabs({ reloadBeforeCheck = true } = {}) {
     }
   }
 
-  return dedupeProjects(projects);
+  return applyOwnedBricksCache(dedupeProjects(projects));
 }
 
-async function reloadTabAndWait(tabId) {
-  await chrome.tabs.reload(tabId);
-  await waitForTabComplete(tabId);
-  await wait(1500);
+async function fetchProjectsFromApiTabs(tabs) {
+  let hasSuccessfulApiScan = false;
+  const projectLists = await Promise.all(
+    tabs.map(async (tab) => {
+      try {
+        const response = await chrome.tabs.sendMessage(tab.id, { type: "FETCH_BRICKS_API_PROJECTS" });
+        if (!response?.ok) {
+          console.log("[BricksCheck] API scan failed for tab", tab.id, response?.error || "unknown error");
+          return [];
+        }
+
+        hasSuccessfulApiScan = true;
+        return (response.projects || []).map((project) => ({
+          ...project,
+          tabId: tab.id
+        }));
+      } catch (error) {
+        console.log("[BricksCheck] API scan message failed for tab", tab.id, error?.message || error);
+        return [];
+      }
+    })
+  );
+
+  return {
+    ok: hasSuccessfulApiScan,
+    projects: projectLists.flat()
+  };
+}
+
+async function scanTab(tabId) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, { type: "SCAN_BRICKS_PAGE" });
+  } catch (error) {
+    console.log("[BricksCheck] Unable to scan tab", tabId, error?.message || error);
+    return { projects: [], pageReady: true };
+  }
 }
 
 function waitForTabComplete(tabId) {
@@ -461,6 +499,61 @@ function formatInteger(value) {
   return new Intl.NumberFormat("fr-FR", {
     maximumFractionDigits: 0
   }).format(Number(value || 0));
+}
+
+async function applyOwnedBricksCache(projects) {
+  const { [OWNED_BRICKS_CACHE_KEY]: ownedBricksByProject = {} } = await chrome.storage.local.get(OWNED_BRICKS_CACHE_KEY);
+  const now = Date.now();
+  const nextCache = { ...ownedBricksByProject };
+  let cacheChanged = false;
+
+  const hydratedProjects = projects.map((project) => {
+    const key = project.id || project.name;
+    if (!key) {
+      return project;
+    }
+
+    if (hasKnownOwnedBricks(project.ownedBricks)) {
+      nextCache[key] = {
+        name: project.name,
+        ownedBricks: Number(project.ownedBricks),
+        updatedAt: now
+      };
+      cacheChanged = true;
+      return project;
+    }
+
+    const cached = nextCache[key];
+    if (!cached || now - Number(cached.updatedAt || 0) > OWNED_BRICKS_CACHE_MAX_AGE_MS) {
+      return project;
+    }
+
+    console.log("[BricksCheck] Using cached ownedBricks for", project.name, "=>", cached.ownedBricks);
+    return {
+      ...project,
+      ownedBricks: cached.ownedBricks,
+      ownedBricksSource: "cache"
+    };
+  });
+
+  const prunedCache = Object.fromEntries(
+    Object.entries(nextCache).filter(([, cached]) => now - Number(cached.updatedAt || 0) <= OWNED_BRICKS_CACHE_MAX_AGE_MS)
+  );
+
+  if (cacheChanged || Object.keys(prunedCache).length !== Object.keys(nextCache).length) {
+    await chrome.storage.local.set({ [OWNED_BRICKS_CACHE_KEY]: prunedCache });
+  }
+
+  return hydratedProjects;
+}
+
+function hasKnownOwnedBricks(value) {
+  if (value === null || value === undefined) {
+    return false;
+  }
+
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) && numericValue >= 0;
 }
 
 function dedupeProjects(projects) {

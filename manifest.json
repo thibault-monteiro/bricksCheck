@@ -10,9 +10,20 @@
     "tabs"
   ],
   "host_permissions": [
-    "https://app.bricks.co/*"
+    "https://app.bricks.co/*",
+    "https://api.bricks.co/*"
   ],
   "content_scripts": [
+    {
+      "matches": [
+        "https://app.bricks.co/*"
+      ],
+      "js": [
+        "api_bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
     {
       "matches": [
         "https://app.bricks.co/*"
