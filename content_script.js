@@ -32,12 +32,13 @@ function scanProjectsPage() {
 
   const projects = investNodes.map(extractProjectFromInvestButton).filter(Boolean);
 
-  // Detect if the SPA has fully rendered: if we found cards but zero brick images
-  // anywhere on the page, React hasn't finished rendering yet
-  const hasBrickImages = document.querySelectorAll('img[src*="/bricks."]').length > 0;
-  const pageReady = projects.length === 0 || hasBrickImages;
+  // Detect if the SPA has fully rendered: check for brick images (incl. lazy-loaded)
+  // or if any project already has ownedBricks > 0 via text fallback
+  const hasBrickImages = document.querySelectorAll(BRICK_IMG_SELECTOR).length > 0;
+  const hasAnyOwnedBricks = projects.some((p) => p.ownedBricks > 0);
+  const pageReady = projects.length === 0 || hasBrickImages || hasAnyOwnedBricks;
   if (!pageReady) {
-    console.log('[BricksCheck] Page not ready: found', projects.length, 'cards but 0 brick images on page');
+    console.log('[BricksCheck] Page not ready: found', projects.length, 'cards but 0 brick images and 0 owned bricks');
   }
 
   return { projects, pageReady };
@@ -186,19 +187,22 @@ function extractOwnedBricks(text, projectName = "") {
   return 0;
 }
 
+// Selector that matches brick badge images, including lazy-loaded variants
+const BRICK_IMG_SELECTOR = 'img[src*="/bricks."], img[data-src*="/bricks."], img[loading="lazy"][src*="/bricks."]';
+
 function extractOwnedBricksFromProjectsCard(card, projectName = "") {
   // Le badge bricks (nombre + icône bricks.png) peut être en dehors du "card"
   // trouvé par findProjectCardFromInvestButton (zone texte uniquement).
   // On remonte progressivement dans le DOM pour trouver le conteneur complet.
   let searchRoot = card;
   for (let level = 0; level < 4; level++) {
-    const brickImages = searchRoot.querySelectorAll('img[src*="/bricks."]');
+    const brickImages = searchRoot.querySelectorAll(BRICK_IMG_SELECTOR);
     const allImages = searchRoot.querySelectorAll('img');
-    const allImgSrcs = [...allImages].map(i => i.src).slice(0, 5);
+    const allImgSrcs = [...allImages].map(i => i.src || i.dataset.src || '').slice(0, 5);
     console.log(`[BricksCheck] Level ${level}: tag=<${searchRoot.tagName}> brickImgs=${brickImages.length} totalImgs=${allImages.length} srcs=`, allImgSrcs);
 
     if (brickImages.length === 1) {
-      console.log('[BricksCheck] Found 1 brick img:', brickImages[0].src);
+      console.log('[BricksCheck] Found 1 brick img:', brickImages[0].src || brickImages[0].dataset.src);
       const value = extractValueNearBrickImage(brickImages[0]);
       console.log('[BricksCheck] extractValueNearBrickImage =>', value);
       if (value > 0) return value;
@@ -207,12 +211,22 @@ function extractOwnedBricksFromProjectsCard(card, projectName = "") {
       break;
     }
 
+    // Text fallback at this level: look for a number before the project name
+    const textValue = extractOwnedBricksFromText(searchRoot, projectName);
+    if (textValue > 0) {
+      console.log(`[BricksCheck] Text fallback found ${textValue} at level ${level}`);
+      return textValue;
+    }
+
     if (!searchRoot.parentElement) break;
     searchRoot = searchRoot.parentElement;
   }
 
-  // Fallback texte : lignes avant le nom du projet
-  const text = normalizeText(card.innerText || card.textContent || "");
+  return 0;
+}
+
+function extractOwnedBricksFromText(element, projectName) {
+  const text = normalizeText(element.innerText || element.textContent || "");
   const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
   const nameLineIndex = findProjectNameLineIndex(lines, projectName);
 
