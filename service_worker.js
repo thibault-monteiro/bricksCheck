@@ -84,18 +84,47 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
+let shortIntervalTimerId = null;
+
 async function syncAlarm() {
   const options = await getOptions();
   await chrome.alarms.clear(ALARM_NAME);
+  clearShortInterval();
 
   if (!options.enabled) {
     return;
   }
 
-  chrome.alarms.create(ALARM_NAME, {
-    delayInMinutes: 0.1,
-    periodInMinutes: Math.max(0.5, options.intervalMinutes)
-  });
+  const intervalMinutes = Number(options.intervalMinutes) || 1;
+
+  if (intervalMinutes < 0.5) {
+    // chrome.alarms minimum is 30s; use setTimeout for shorter intervals
+    const intervalMs = Math.max(5000, intervalMinutes * 60 * 1000);
+    scheduleShortInterval(intervalMs);
+  } else {
+    chrome.alarms.create(ALARM_NAME, {
+      delayInMinutes: 0.1,
+      periodInMinutes: intervalMinutes
+    });
+  }
+}
+
+function scheduleShortInterval(intervalMs) {
+  clearShortInterval();
+  shortIntervalTimerId = setTimeout(async () => {
+    await runCheck();
+    const options = await getOptions();
+    if (options.enabled && Number(options.intervalMinutes) < 0.5) {
+      scheduleShortInterval(intervalMs);
+    }
+  }, intervalMs);
+}
+
+function clearShortInterval() {
+  if (shortIntervalTimerId !== null) {
+    clearTimeout(shortIntervalTimerId);
+    shortIntervalTimerId = null;
+  }
 }
 
 async function runCheck() {
