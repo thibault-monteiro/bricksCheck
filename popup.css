@@ -114,6 +114,10 @@ select:focus {
   grid-template-columns: 1fr 1fr;
 }
 
+.actions .wide {
+  grid-column: 1 / -1;
+}
+
 button {
   background: #2f6f5e;
   border: 1px solid #2f6f5e;

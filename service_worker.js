@@ -58,6 +58,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "CLEAR_NOTIFICATIONS") {
+    clearNotifications()
+      .then((clearedCount) => sendResponse({ ok: true, clearedCount }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message?.type === "PAGE_SCAN_RESULT") {
     handleProjects(message.projects || [])
       .then((lastCheck) => sendResponse({ ok: true, lastCheck }))
@@ -112,7 +119,8 @@ async function handleProjects(projects) {
   let notificationCount = 0;
 
   if (shouldNotify) {
-    notificationCount = await notifyProjects(matches, options);
+    await clearNotifications();
+    notificationCount = await notifyProjects(matches);
   }
 
   const lastCheck = await saveLastCheck({
@@ -217,27 +225,14 @@ function shouldNotifyProject(project, options) {
   return Number(project.ownedBricks || 0) < Number(options.ownedThreshold);
 }
 
-async function notifyProjects(matches, options) {
+async function notifyProjects(matches) {
   let createdCount = 0;
 
   for (const project of matches) {
     const notificationId = `bricks-${Date.now()}-${createdCount}-${project.id || "project"}`;
-    const ownedBricks = Number(project.ownedBricks || 0);
-    const missingBricks = Math.max(0, Number(options.ownedThreshold) - ownedBricks);
     const availableBricks = Math.max(0, Number(project.availableBricks || 0));
-    const title =
-      availableBricks > 0
-        ? `${formatInteger(availableBricks)} brique(s) disponibles`
-        : `${ownedBricks} brique(s) sur ${project.name}`;
-    const availability =
-      availableBricks > 0
-        ? `${project.name}: ${formatCurrency(project.availableAmount)} restants. `
-        : "";
-    const threshold =
-      missingBricks > 0
-        ? `Objectif ${options.ownedThreshold}: il vous en manque ${missingBricks}.`
-        : `Objectif ${options.ownedThreshold} atteint ou dépassé.`;
-    const message = `${availability}${threshold}`;
+    const title = project.name;
+    const message = `${formatInteger(availableBricks)} ${availableBricks > 1 ? "briques" : "brique"} disponibles`;
 
     await chrome.notifications.create(notificationId, {
       type: "basic",
@@ -256,6 +251,26 @@ async function notifyProjects(matches, options) {
   }
 
   return createdCount;
+}
+
+async function clearNotifications() {
+  const [{ notificationLinks = {} }, activeNotifications] = await Promise.all([
+    chrome.storage.local.get("notificationLinks"),
+    chrome.notifications.getAll()
+  ]);
+  const notificationIds = [...new Set([...Object.keys(notificationLinks), ...Object.keys(activeNotifications)])];
+  let clearedCount = 0;
+
+  await Promise.all(
+    notificationIds.map(async (notificationId) => {
+      if (await chrome.notifications.clear(notificationId)) {
+        clearedCount += 1;
+      }
+    })
+  );
+
+  await chrome.storage.local.set({ notificationLinks: {} });
+  return clearedCount;
 }
 
 async function saveLastCheck(lastCheck) {
@@ -369,14 +384,6 @@ function isProjectUrl(url) {
 function formatInteger(value) {
   return new Intl.NumberFormat("fr-FR", {
     maximumFractionDigits: 0
-  }).format(Number(value || 0));
-}
-
-function formatCurrency(value) {
-  return new Intl.NumberFormat("fr-FR", {
-    maximumFractionDigits: 0,
-    style: "currency",
-    currency: "EUR"
   }).format(Number(value || 0));
 }
 

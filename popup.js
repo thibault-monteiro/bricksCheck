@@ -14,6 +14,7 @@ const elements = {
   reloadBeforeCheck: document.querySelector("#reloadBeforeCheck"),
   saveButton: document.querySelector("#saveButton"),
   checkNowButton: document.querySelector("#checkNowButton"),
+  clearNotificationsButton: document.querySelector("#clearNotificationsButton"),
   statusText: document.querySelector("#statusText"),
   nextCheckText: document.querySelector("#nextCheckText"),
   lastCheckText: document.querySelector("#lastCheckText")
@@ -35,6 +36,7 @@ async function init() {
 
   elements.saveButton.addEventListener("click", saveOptions);
   elements.checkNowButton.addEventListener("click", checkNow);
+  elements.clearNotificationsButton.addEventListener("click", clearNotifications);
 
   await refreshAlarmStatus();
   countdownTimerId = setInterval(renderCountdown, 1000);
@@ -90,6 +92,26 @@ async function checkNow() {
     await refreshAlarmStatus();
   } finally {
     elements.checkNowButton.disabled = false;
+  }
+}
+
+async function clearNotifications() {
+  elements.clearNotificationsButton.disabled = true;
+
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "CLEAR_NOTIFICATIONS" });
+    if (!response?.ok) {
+      elements.lastCheckText.textContent = response?.error || "La purge des notifications a échoué.";
+      return;
+    }
+
+    const clearedCount = response.clearedCount || 0;
+    elements.lastCheckText.textContent =
+      clearedCount > 0
+        ? `${clearedCount} notification(s) purgée(s).`
+        : "Aucune notification active à purger.";
+  } finally {
+    elements.clearNotificationsButton.disabled = false;
   }
 }
 
