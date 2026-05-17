@@ -8,9 +8,10 @@ Bricks Check est une extension indépendante et non officielle. Elle n'est pas a
 
 ## Fonctionnalités
 
-- Récupération des projets via l'API Bricks (`api.bricks.co`), avec fallback sur la lecture DOM des cartes si l'API n'est pas disponible.
+- Récupération des projets via l'API Bricks (`api.bricks.co`).
 - Calcul des briques disponibles à partir du catalogue et du portefeuille investisseur.
 - Cache local des briques possédées (TTL 6 h) pour éviter les fausses notifications quand le nombre de briques est temporairement inconnu.
+- Notification d'erreur et réouverture automatique d'un onglet Bricks si l'API échoue (token expiré, problème réseau...).
 - Seuil configurable, par défaut `100` briques.
 - Vérification automatique toutes les minutes par défaut.
 - Une notification Chrome par projet correspondant.
@@ -37,9 +38,9 @@ Bricks Check est une extension indépendante et non officielle. Elle n'est pas a
 L'extension injecte deux scripts sur `https://app.bricks.co/*` :
 
 1. **`api_bridge.js`** (monde `MAIN`, `document_start`) — lit le token d'authentification Bricks depuis le `localStorage`/`sessionStorage` du site et interroge l'API Bricks (`/projects` et `/investor/portfolio/properties`) pour obtenir le catalogue de projets et le portefeuille de l'investisseur. La communication avec le content script se fait par `window.postMessage`.
-2. **`content_script.js`** (monde isolé) — transmet les résultats de l'API au service worker. En cas d'échec de l'API, il se rabat sur la lecture DOM des cartes visibles dans la page (badges `Collecte en cours`, nombre de briques affiché).
+2. **`content_script.js`** (monde isolé) — transmet les résultats de l'API au service worker.
 
-Le `service_worker` planifie les vérifications avec `chrome.alarms`, tente d'abord un scan API puis un scan DOM en fallback, maintient un cache local des briques possédées, déclenche les notifications avec `chrome.notifications`, et ouvre un nouvel onglet quand une notification est cliquée.
+Le `service_worker` planifie les vérifications avec `chrome.alarms`, interroge l'API via le content script, maintient un cache local des briques possédées, déclenche les notifications avec `chrome.notifications`, et ouvre un nouvel onglet quand une notification est cliquée. Si l'API échoue (token expiré, problème réseau), l'extension affiche une notification d'erreur et tente de recharger ou ouvrir un onglet Bricks pour rafraîchir la session.
 
 ## Sécurité et confidentialité
 
@@ -54,13 +55,13 @@ Le `service_worker` planifie les vérifications avec `chrome.alarms`, tente d'ab
 
 - Bricks Check est un outil de notification personnel, pas un outil de conseil financier ou d'investissement.
 - Un onglet `https://app.bricks.co` doit rester ouvert (et l'utilisateur connecté) pour que l'extension puisse interroger l'API.
-- Si l'API Bricks change ou devient inaccessible, l'extension se rabat sur la lecture DOM, qui dépend de la structure HTML du site.
+- Si l'API Bricks change ou devient inaccessible, l'extension affiche une notification d'erreur et recharge l'onglet Bricks.
 - Les notifications sont envoyées à chaque vérification tant que les conditions sont remplies.
 
 ## Fichiers principaux
 
 - `manifest.json` : configuration de l'extension Chrome.
 - `api_bridge.js` : script injecté dans le monde `MAIN` pour interroger l'API Bricks.
-- `content_script.js` : pont entre l'API bridge et le service worker, avec fallback DOM.
+- `content_script.js` : pont entre l'API bridge et le service worker.
 - `service_worker.js` : planification, scan API/DOM, cache, notifications et ouverture au clic.
 - `popup.html`, `popup.css`, `popup.js` : interface de réglage.

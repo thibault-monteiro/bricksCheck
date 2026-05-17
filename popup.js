@@ -2,8 +2,7 @@ const DEFAULT_OPTIONS = {
   enabled: false,
   intervalMinutes: 1,
   ownedThreshold: 100,
-  notifyWhenBelowThreshold: true,
-  reloadBeforeCheck: true
+  notifyWhenBelowThreshold: true
 };
 
 const elements = {
@@ -11,7 +10,6 @@ const elements = {
   intervalMinutes: document.querySelector("#intervalMinutes"),
   ownedThreshold: document.querySelector("#ownedThreshold"),
   notifyWhenBelowThreshold: document.querySelector("#notifyWhenBelowThreshold"),
-  reloadBeforeCheck: document.querySelector("#reloadBeforeCheck"),
   saveButton: document.querySelector("#saveButton"),
   checkNowButton: document.querySelector("#checkNowButton"),
   clearNotificationsButton: document.querySelector("#clearNotificationsButton"),
@@ -47,7 +45,6 @@ function renderOptions(options) {
   elements.intervalMinutes.value = String(options.intervalMinutes);
   elements.ownedThreshold.value = String(options.ownedThreshold);
   elements.notifyWhenBelowThreshold.checked = options.notifyWhenBelowThreshold;
-  elements.reloadBeforeCheck.checked = options.reloadBeforeCheck;
   elements.statusText.textContent = options.enabled ? "Surveillance active" : "Surveillance inactive";
 }
 
@@ -56,8 +53,7 @@ function readOptions() {
     enabled: elements.enabled.checked,
     intervalMinutes: Number(elements.intervalMinutes.value),
     ownedThreshold: Math.max(0, Number(elements.ownedThreshold.value || 0)),
-    notifyWhenBelowThreshold: elements.notifyWhenBelowThreshold.checked,
-    reloadBeforeCheck: elements.reloadBeforeCheck.checked
+    notifyWhenBelowThreshold: elements.notifyWhenBelowThreshold.checked
   };
 }
 

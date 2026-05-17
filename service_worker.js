@@ -8,8 +8,7 @@ const DEFAULT_OPTIONS = {
   enabled: false,
   intervalMinutes: 1,
   ownedThreshold: 100,
-  notifyWhenBelowThreshold: true,
-  reloadBeforeCheck: true
+  notifyWhenBelowThreshold: true
 };
 
 chrome.runtime.onInstalled.addListener(async () => {
@@ -74,13 +73,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === "PAGE_SCAN_RESULT") {
-    handleProjects(message.projects || [])
-      .then((lastCheck) => sendResponse({ ok: true, lastCheck }))
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
-    return true;
-  }
-
   return false;
 });
 
@@ -104,7 +96,7 @@ async function runCheck() {
     return saveLastCheck({ checkedAt: Date.now(), matches: [], skipped: true });
   }
 
-  const projects = await scanOpenBricksTabs({ reloadBeforeCheck: options.reloadBeforeCheck });
+  const projects = await scanOpenBricksTabs();
   if (projects.length === 0) {
     return saveLastCheck({
       checkedAt: Date.now(),
@@ -164,7 +156,7 @@ async function getStatus() {
   };
 }
 
-async function scanOpenBricksTabs({ reloadBeforeCheck = true } = {}) {
+async function scanOpenBricksTabs() {
   const allTabs = await chrome.tabs.query({ url: "https://app.bricks.co/*" });
   if (allTabs.length === 0) {
     return [];
@@ -179,53 +171,21 @@ async function scanOpenBricksTabs({ reloadBeforeCheck = true } = {}) {
     return applyOwnedBricksCache(dedupeProjects(apiScan.projects));
   }
 
-  console.log("[BricksCheck] API scan unavailable, falling back to DOM scan");
-
-  if (reloadBeforeCheck) {
-    console.log("[BricksCheck] Reload skipped: API scan is the primary source, DOM scan is fallback only");
-  }
-
-  const scanTabs = async () => {
-    let allReady = true;
-    const projectLists = await Promise.all(
-      tabs.map(async (tab) => {
-        const response = await scanTab(tab.id);
-        if (response?.pageReady === false) {
-          allReady = false;
-        }
-        return (response?.projects || []).map((project) => ({
-          ...project,
-          tabId: tab.id
-        }));
-      })
-    );
-    return { projects: projectLists.flat(), allReady };
-  };
-
-  let { projects, allReady } = await scanTabs();
-
-  // DOM fallback only: if the SPA hasn't finished rendering (cards found but no
-  // brick images), retry once before using the available data.
-  if (!allReady && projects.length > 0) {
-    console.log("[BricksCheck] Page not ready, retrying scan in 3s...");
-    await wait(3000);
-    ({ projects, allReady } = await scanTabs());
-    if (!allReady) {
-      console.log("[BricksCheck] Page still not ready after retry, using available data");
-    }
-  }
-
-  return applyOwnedBricksCache(dedupeProjects(projects));
+  console.log("[BricksCheck] API scan failed, notifying user");
+  await notifyApiFailure(apiScan.error);
+  return [];
 }
 
 async function fetchProjectsFromApiTabs(tabs) {
   let hasSuccessfulApiScan = false;
+  let lastError = "";
   const projectLists = await Promise.all(
     tabs.map(async (tab) => {
       try {
         const response = await chrome.tabs.sendMessage(tab.id, { type: "FETCH_BRICKS_API_PROJECTS" });
         if (!response?.ok) {
-          console.log("[BricksCheck] API scan failed for tab", tab.id, response?.error || "unknown error");
+          lastError = response?.error || "unknown error";
+          console.log("[BricksCheck] API scan failed for tab", tab.id, lastError);
           return [];
         }
 
@@ -235,7 +195,8 @@ async function fetchProjectsFromApiTabs(tabs) {
           tabId: tab.id
         }));
       } catch (error) {
-        console.log("[BricksCheck] API scan message failed for tab", tab.id, error?.message || error);
+        lastError = error?.message || String(error);
+        console.log("[BricksCheck] API scan message failed for tab", tab.id, lastError);
         return [];
       }
     })
@@ -243,17 +204,31 @@ async function fetchProjectsFromApiTabs(tabs) {
 
   return {
     ok: hasSuccessfulApiScan,
-    projects: projectLists.flat()
+    projects: projectLists.flat(),
+    error: lastError
   };
 }
 
-async function scanTab(tabId) {
-  try {
-    return await chrome.tabs.sendMessage(tabId, { type: "SCAN_BRICKS_PAGE" });
-  } catch (error) {
-    console.log("[BricksCheck] Unable to scan tab", tabId, error?.message || error);
-    return { projects: [], pageReady: true };
+async function notifyApiFailure(errorMessage) {
+  const notificationId = `bricks-api-error-${Date.now()}`;
+
+  // Ouvrir un onglet Bricks pour rafraîchir la session
+  const existingTabs = await chrome.tabs.query({ url: "https://app.bricks.co/*" });
+  if (existingTabs.length > 0) {
+    await chrome.tabs.reload(existingTabs[0].id);
+  } else {
+    await chrome.tabs.create({ url: "https://app.bricks.co/" });
   }
+
+  await chrome.notifications.create(notificationId, {
+    type: "basic",
+    iconUrl: chrome.runtime.getURL("icon-128.png"),
+    title: "Bricks Check — Erreur API",
+    message: `Impossible de récupérer les projets. ${errorMessage || "Reconnectez-vous sur Bricks.co."}`,
+    priority: 2
+  });
+
+  await trackNotification(notificationId);
 }
 
 function waitForTabComplete(tabId) {
