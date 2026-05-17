@@ -9,78 +9,20 @@
     value: true
   });
 
-  const API_ORIGIN = "https://api.bricks.co";
-
-  window.addEventListener("message", async (event) => {
-    if (event.source !== window) {
-      return;
-    }
-
-    const data = event.data || {};
-    if (data.source !== "BRICKS_CHECK_CONTENT" || data.type !== "FETCH_BRICKS_API_DATA") {
-      return;
-    }
-
-    const payload = await fetchBricksApiData().catch((error) => ({
-      ok: false,
-      error: error?.message || String(error)
-    }));
-
-    window.postMessage(
-      {
-        source: "BRICKS_CHECK_PAGE",
-        type: "BRICKS_API_DATA_RESULT",
-        requestId: data.requestId,
-        payload
-      },
-      window.location.origin
-    );
-  });
-
-  async function fetchBricksApiData() {
+  // Broadcast the auth token on page load so the extension can cache it
+  setTimeout(() => {
     const auth = readDetectedAuth();
-    if (!auth.token) {
-      throw new Error("Token Bricks introuvable dans localStorage/sessionStorage.");
-    }
-
-    const [catalog, portfolio] = await Promise.all([
-      fetchBricksJson("/projects", auth.token),
-      fetchBricksJson("/investor/portfolio/properties", auth.token).catch(() => null)
-    ]);
-
-    return {
-      ok: true,
-      catalog,
-      portfolio
-    };
-  }
-
-  async function fetchBricksJson(apiPath, token) {
-    const response = await fetch(new URL(apiPath, API_ORIGIN).toString(), {
-      method: "GET",
-      credentials: "include",
-      headers: {
-        Authorization: "Bearer " + token
-      }
-    });
-
-    const text = await response.text();
-    let body = text;
-
-    try {
-      body = JSON.parse(text);
-    } catch {
-      // Keep raw text for error reporting.
-    }
-
-    if (!response.ok) {
-      throw new Error(
-        `Bricks API ${response.status} on ${apiPath}: ${typeof body === "string" ? body : JSON.stringify(body)}`
+    if (auth.token) {
+      window.postMessage(
+        {
+          source: "BRICKS_CHECK_PAGE",
+          type: "BRICKS_AUTH_TOKEN",
+          token: auth.token
+        },
+        window.location.origin
       );
     }
-
-    return body;
-  }
+  }, 1000);
 
   function readDetectedAuth() {
     const result = { email: null, token: null };

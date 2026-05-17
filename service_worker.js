@@ -3,6 +3,8 @@ const CLEAR_NOTIFICATION_ALARM_PREFIX = "bricks-clear-notification:";
 const NOTIFICATION_TTL_MINUTES = 0.5;
 const OWNED_BRICKS_CACHE_KEY = "ownedBricksByProject";
 const OWNED_BRICKS_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const AUTH_TOKEN_KEY = "bricksAuthToken";
+const API_ORIGIN = "https://api.bricks.co";
 
 const DEFAULT_OPTIONS = {
   enabled: false,
@@ -71,6 +73,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .then((clearedCount) => sendResponse({ ok: true, clearedCount }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
+  }
+
+  if (message?.type === "BRICKS_AUTH_TOKEN" && message.token) {
+    chrome.storage.local.set({ [AUTH_TOKEN_KEY]: message.token });
+    console.log("[BricksCheck] Auth token cached");
+    return false;
   }
 
   return false;
@@ -157,61 +165,208 @@ async function getStatus() {
 }
 
 async function scanOpenBricksTabs() {
-  let allTabs = await chrome.tabs.query({ url: "https://app.bricks.co/*" });
-
-  if (allTabs.length === 0) {
-    console.log("[BricksCheck] No Bricks tab found, opening one");
-    const tab = await chrome.tabs.create({ url: "https://app.bricks.co/", active: false });
-    await waitForTabComplete(tab.id);
-    await wait(2000);
-    allTabs = [tab];
+  const token = await getCachedToken();
+  if (!token) {
+    console.log("[BricksCheck] No cached token, opening Bricks tab to get one");
+    const refreshed = await refreshTokenFromTab();
+    if (!refreshed) {
+      await notifyApiFailure("Aucun token Bricks. Connectez-vous sur Bricks.co.");
+      return [];
+    }
+    return scanOpenBricksTabs();
   }
 
-  // Priorité : premier onglet épinglé, sinon tous les onglets
-  const pinnedTab = allTabs.find((tab) => tab.pinned);
-  const tabs = pinnedTab ? [pinnedTab] : allTabs;
+  const result = await fetchBricksApiDirect(token);
+  if (result.ok) {
+    return applyOwnedBricksCache(dedupeProjects(result.projects));
+  }
 
-  const apiScan = await fetchProjectsFromApiTabs(tabs);
-  if (apiScan.ok) {
-    return applyOwnedBricksCache(dedupeProjects(apiScan.projects));
+  // Token may be expired — try to refresh it from a tab
+  if (result.httpStatus === 401 || result.httpStatus === 403) {
+    console.log("[BricksCheck] Token expired, refreshing from tab");
+    await chrome.storage.local.remove(AUTH_TOKEN_KEY);
+    const refreshed = await refreshTokenFromTab();
+    if (refreshed) {
+      const retryToken = await getCachedToken();
+      if (retryToken) {
+        const retry = await fetchBricksApiDirect(retryToken);
+        if (retry.ok) {
+          return applyOwnedBricksCache(dedupeProjects(retry.projects));
+        }
+      }
+    }
   }
 
   console.log("[BricksCheck] API scan failed, notifying user");
-  await notifyApiFailure(apiScan.error);
+  await notifyApiFailure(result.error);
   return [];
 }
 
-async function fetchProjectsFromApiTabs(tabs) {
-  let hasSuccessfulApiScan = false;
-  let lastError = "";
-  const projectLists = await Promise.all(
-    tabs.map(async (tab) => {
-      try {
-        const response = await chrome.tabs.sendMessage(tab.id, { type: "FETCH_BRICKS_API_PROJECTS" });
-        if (!response?.ok) {
-          lastError = response?.error || "unknown error";
-          console.log("[BricksCheck] API scan failed for tab", tab.id, lastError);
-          return [];
-        }
+async function getCachedToken() {
+  const { [AUTH_TOKEN_KEY]: token } = await chrome.storage.local.get(AUTH_TOKEN_KEY);
+  return token || null;
+}
 
-        hasSuccessfulApiScan = true;
-        return (response.projects || []).map((project) => ({
-          ...project,
-          tabId: tab.id
-        }));
-      } catch (error) {
-        lastError = error?.message || String(error);
-        console.log("[BricksCheck] API scan message failed for tab", tab.id, lastError);
-        return [];
-      }
-    })
-  );
+async function refreshTokenFromTab() {
+  const existingTabs = await chrome.tabs.query({ url: "https://app.bricks.co/*" });
+  let tab;
+
+  if (existingTabs.length > 0) {
+    tab = existingTabs[0];
+    await chrome.tabs.reload(tab.id);
+  } else {
+    tab = await chrome.tabs.create({ url: "https://app.bricks.co/", active: false });
+  }
+
+  await waitForTabComplete(tab.id);
+  await wait(3000);
+
+  const newToken = await getCachedToken();
+  return Boolean(newToken);
+}
+
+async function fetchBricksApiDirect(token) {
+  try {
+    const [catalog, portfolio] = await Promise.all([
+      fetchBricksJson("/projects", token),
+      fetchBricksJson("/investor/portfolio/properties", token).catch(() => null)
+    ]);
+
+    const projects = mapBricksApiProjects(catalog, portfolio);
+    console.log("[BricksCheck] API direct scan =>", projects.length, "projects");
+    return { ok: true, projects };
+  } catch (error) {
+    const httpStatus = error.httpStatus || 0;
+    return { ok: false, projects: [], error: error.message, httpStatus };
+  }
+}
+
+async function fetchBricksJson(apiPath, token) {
+  const response = await fetch(new URL(apiPath, API_ORIGIN).toString(), {
+    method: "GET",
+    headers: { Authorization: "Bearer " + token }
+  });
+
+  if (!response.ok) {
+    const error = new Error(`Bricks API ${response.status} on ${apiPath}`);
+    error.httpStatus = response.status;
+    throw error;
+  }
+
+  return response.json();
+}
+
+function mapBricksApiProjects(catalog, portfolio) {
+  const ownedBricksByPropertyId = buildOwnedBricksByPropertyId(portfolio);
+  const activeProjects = [
+    ...((catalog?.ongoing?.projects) || []),
+    ...((catalog?.upcoming?.projects) || [])
+  ];
+
+  return activeProjects
+    .map((property) => mapBricksApiProject(property, ownedBricksByPropertyId))
+    .filter(Boolean);
+}
+
+function mapBricksApiProject(property, ownedBricksByPropertyId) {
+  const name = localizeText(property?.name) || "";
+  if (!name) {
+    return null;
+  }
+
+  const listingStatus = property?.listingStatus || "ongoing";
+  if (listingStatus !== "ongoing") {
+    return null;
+  }
+
+  const startedAt = property?.funding?.startedAt ? new Date(property.funding.startedAt) : null;
+  if (startedAt && startedAt.getTime() > Date.now()) {
+    return null;
+  }
+
+  const brickPriceCents = Number(property?.funding?.brickPrice ?? property?.brickPrice ?? 1000);
+  const targetAmountCents = Number(property?.funding?.amountToFundCents ?? 0);
+  const purchasedBrickCount = Number(property?.funding?.purchasedBrickCount ?? 0);
+  const autoInvestPurchasedBrickCount = Number(property?.funding?.autoInvestPurchasedBrickCount ?? 0);
+  const investedAmountCents = (purchasedBrickCount + autoInvestPurchasedBrickCount) * brickPriceCents;
+  const availableAmountCents = Math.max(0, targetAmountCents - investedAmountCents);
+  const brickPrice = centsToEuros(brickPriceCents) || 10;
+  const availableBricks = brickPriceCents > 0 ? Math.floor(availableAmountCents / brickPriceCents) : 0;
+
+  if (availableBricks <= 0 || targetAmountCents <= 0 || property?.hasBricksAvailable === false) {
+    return null;
+  }
+
+  const ownedBricks =
+    normalizeOwnedBricks(property?.ownedBricks) ??
+    normalizeOwnedBricks(property?.investorBricks?.owned) ??
+    normalizeOwnedBricks(ownedBricksByPropertyId.get(property.id)) ??
+    0;
 
   return {
-    ok: hasSuccessfulApiScan,
-    projects: projectLists.flat(),
-    error: lastError
+    id: property.id || slugify(name),
+    name,
+    availableAmount: centsToEuros(availableAmountCents),
+    availableBricks,
+    brickPrice,
+    investedAmount: centsToEuros(investedAmountCents),
+    targetAmount: centsToEuros(targetAmountCents),
+    ownedBricks,
+    ownedBricksSource: "api",
+    status: "Collecte en cours",
+    url: property.id ? `https://app.bricks.co/project/${property.id}` : "https://app.bricks.co/"
   };
+}
+
+function buildOwnedBricksByPropertyId(portfolio) {
+  const ownedBricksByPropertyId = new Map();
+  const projects = [
+    ...((portfolio?.ongoing) || []),
+    ...((portfolio?.refunded) || [])
+  ];
+
+  for (const project of projects) {
+    if (project?.propertyId) {
+      ownedBricksByPropertyId.set(project.propertyId, project.brickCount);
+    }
+  }
+
+  return ownedBricksByPropertyId;
+}
+
+function localizeText(value) {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (value && typeof value === "object") {
+    return value.fr || value.en || Object.values(value).find((text) => typeof text === "string") || "";
+  }
+
+  return "";
+}
+
+function centsToEuros(value) {
+  const cents = Number(value || 0);
+  return Number.isFinite(cents) ? Number((cents / 100).toFixed(2)) : 0;
+}
+
+function normalizeOwnedBricks(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) && numericValue >= 0 ? numericValue : null;
+}
+
+function slugify(value) {
+  return String(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
 }
 
 async function notifyApiFailure(errorMessage) {

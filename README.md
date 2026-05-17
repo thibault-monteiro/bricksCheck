@@ -2,7 +2,7 @@
 
 Bricks Check est une extension Chrome Manifest V3 qui surveille les projets en collecte sur Bricks.co et envoie des notifications quand le nombre de briques disponibles correspond à votre seuil.
 
-Elle est pensée pour un usage simple : garder un onglet `https://app.bricks.co` ouvert, laisser l'extension interroger l'API Bricks à intervalle régulier, puis recevoir une notification par projet quand votre nombre de briques reste inférieur à votre objectif.
+Elle est pensée pour un usage simple : se connecter une fois sur `https://app.bricks.co`, laisser l'extension interroger l'API Bricks à intervalle régulier, puis recevoir une notification par projet quand votre nombre de briques reste inférieur à votre objectif. Aucun onglet Bricks n'a besoin de rester ouvert.
 
 Bricks Check est une extension indépendante et non officielle. Elle n'est pas affiliée, associée, autorisée, approuvée ni sponsorisée par Bricks.co. Elle ne constitue pas un conseil en investissement.
 
@@ -24,8 +24,9 @@ Bricks Check est une extension indépendante et non officielle. Elle n'est pas a
 2. Activer le `Mode développeur`.
 3. Cliquer sur `Charger l'extension non empaquetée`.
 4. Sélectionner ce dossier.
-5. Ouvrir `https://app.bricks.co` dans un onglet, idéalement épinglé.
+5. Ouvrir `https://app.bricks.co` dans un onglet pour que l'extension capte le token d'authentification.
 6. Ouvrir le popup Bricks Check, activer la surveillance, puis cliquer sur `Enregistrer`.
+7. L'onglet Bricks peut ensuite être fermé — l'extension fonctionne en arrière-plan.
 
 ## Réglages
 
@@ -37,16 +38,16 @@ Bricks Check est une extension indépendante et non officielle. Elle n'est pas a
 
 L'extension injecte deux scripts sur `https://app.bricks.co/*` :
 
-1. **`api_bridge.js`** (monde `MAIN`, `document_start`) — lit le token d'authentification Bricks depuis le `localStorage`/`sessionStorage` du site et interroge l'API Bricks (`/projects` et `/investor/portfolio/properties`) pour obtenir le catalogue de projets et le portefeuille de l'investisseur. La communication avec le content script se fait par `window.postMessage`.
-2. **`content_script.js`** (monde isolé) — transmet les résultats de l'API au service worker.
+1. **`api_bridge.js`** (monde `MAIN`, `document_start`) — lit le token d'authentification Bricks depuis le `localStorage`/`sessionStorage` du site et le transmet au content script via `window.postMessage`.
+2. **`content_script.js`** (monde isolé) — reçoit le token et le transmet au service worker pour mise en cache.
 
-Le `service_worker` planifie les vérifications avec `chrome.alarms`, interroge l'API via le content script, maintient un cache local des briques possédées, déclenche les notifications avec `chrome.notifications`, et ouvre un nouvel onglet quand une notification est cliquée. Si l'API échoue (token expiré, problème réseau), l'extension affiche une notification d'erreur et tente de recharger ou ouvrir un onglet Bricks pour rafraîchir la session.
+Le `service_worker` stocke le token dans `chrome.storage.local` et appelle directement l'API Bricks (`/projects` et `/investor/portfolio/properties`) sans onglet ouvert. Si le token expire (401/403), l'extension ouvre ou recharge automatiquement un onglet Bricks pour récupérer un nouveau token, puis retente l'appel. En cas d'échec persistant, une notification d'erreur est affichée.
 
 ## Sécurité et confidentialité
 
 - Aucun token GitHub, mot de passe, cookie, clé privée ou secret n'est stocké dans le dépôt.
 - L'extension communique uniquement avec les domaines Bricks (`app.bricks.co` et `api.bricks.co`). Elle ne contient pas de télémétrie et n'appelle aucun service tiers.
-- Les appels à l'API Bricks réutilisent le token d'authentification déjà présent dans le navigateur de l'utilisateur (session Bricks active). Aucun identifiant n'est stocké par l'extension.
+- Les appels à l'API Bricks réutilisent le token d'authentification déjà présent dans le navigateur de l'utilisateur (session Bricks active). Le token est mis en cache dans `chrome.storage.local` et rafraîchi automatiquement quand il expire.
 - Les permissions sont limitées aux besoins de l'extension : alarmes, notifications, stockage local/sync, onglets, et accès à `https://app.bricks.co/*` et `https://api.bricks.co/*`.
 - Les réglages et le cache des briques possédées sont stockés via l'API Chrome `storage`.
 - Elle ne collecte pas volontairement de données personnelles et ne les transmet nulle part.
@@ -54,14 +55,15 @@ Le `service_worker` planifie les vérifications avec `chrome.alarms`, interroge 
 ## Limites
 
 - Bricks Check est un outil de notification personnel, pas un outil de conseil financier ou d'investissement.
-- Un onglet `https://app.bricks.co` doit rester ouvert (et l'utilisateur connecté) pour que l'extension puisse interroger l'API.
-- Si l'API Bricks change ou devient inaccessible, l'extension affiche une notification d'erreur et recharge l'onglet Bricks.
+- L'utilisateur doit être connecté sur Bricks.co au moins une fois pour que l'extension puisse capter le token d'authentification.
+- Si le token expire et que la session Bricks n'est plus active, l'extension tente d'ouvrir un onglet Bricks et affiche une notification d'erreur.
+- Si l'API Bricks change ou devient inaccessible, l'extension affiche une notification d'erreur.
 - Les notifications sont envoyées à chaque vérification tant que les conditions sont remplies.
 
 ## Fichiers principaux
 
 - `manifest.json` : configuration de l'extension Chrome.
-- `api_bridge.js` : script injecté dans le monde `MAIN` pour interroger l'API Bricks.
-- `content_script.js` : pont entre l'API bridge et le service worker.
-- `service_worker.js` : planification, scan API/DOM, cache, notifications et ouverture au clic.
+- `api_bridge.js` : script injecté dans le monde `MAIN` pour lire le token Bricks.
+- `content_script.js` : relais du token vers le service worker, navigation au clic sur notification.
+- `service_worker.js` : appels API directs, cache token et briques, notifications et planification.
 - `popup.html`, `popup.css`, `popup.js` : interface de réglage.

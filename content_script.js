@@ -1,14 +1,4 @@
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === "FETCH_BRICKS_API_PROJECTS") {
-    fetchProjectsFromBricksApi()
-      .then(sendResponse)
-      .catch((error) => {
-        console.log("[BricksCheck] API scan failed", error?.message || error);
-        sendResponse({ ok: false, projects: [], error: error?.message || String(error) });
-      });
-    return true;
-  }
-
   if (message?.type === "CLICK_BRICKS_PROJECT") {
     sendResponse({ clicked: clickProjectByName(message.projectName || "") });
     return false;
@@ -17,164 +7,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
-async function fetchProjectsFromBricksApi() {
-  const payload = await requestBricksApiData();
-  if (!payload?.ok) {
-    return {
-      ok: false,
-      projects: [],
-      error: payload?.error || "Impossible de recuperer les donnees API Bricks."
-    };
+// Forward auth token from api_bridge (MAIN world) to service worker
+window.addEventListener("message", (event) => {
+  if (event.source !== window) {
+    return;
   }
 
-  const projects = mapBricksApiProjects(payload.catalog, payload.portfolio);
-  console.log("[BricksCheck] API projects =>", projects);
-
-  return {
-    ok: true,
-    projects,
-    source: "api"
-  };
-}
-
-function requestBricksApiData() {
-  return new Promise((resolve) => {
-    const requestId = `bricks-check-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const timeoutId = setTimeout(() => {
-      window.removeEventListener("message", handleMessage);
-      resolve({ ok: false, error: "Timeout API bridge Bricks." });
-    }, 20000);
-
-    function handleMessage(event) {
-      if (event.source !== window) {
-        return;
-      }
-
-      const data = event.data || {};
-      if (data.source !== "BRICKS_CHECK_PAGE" || data.type !== "BRICKS_API_DATA_RESULT" || data.requestId !== requestId) {
-        return;
-      }
-
-      clearTimeout(timeoutId);
-      window.removeEventListener("message", handleMessage);
-      resolve(data.payload || { ok: false, error: "Reponse API bridge invalide." });
-    }
-
-    window.addEventListener("message", handleMessage);
-    window.postMessage(
-      {
-        source: "BRICKS_CHECK_CONTENT",
-        type: "FETCH_BRICKS_API_DATA",
-        requestId
-      },
-      window.location.origin
-    );
-  });
-}
-
-function mapBricksApiProjects(catalog, portfolio) {
-  const ownedBricksByPropertyId = buildOwnedBricksByPropertyId(portfolio);
-  const activeProjects = [
-    ...((catalog?.ongoing?.projects) || []),
-    ...((catalog?.upcoming?.projects) || [])
-  ];
-
-  return activeProjects
-    .map((property) => mapBricksApiProject(property, ownedBricksByPropertyId))
-    .filter(Boolean);
-}
-
-function mapBricksApiProject(property, ownedBricksByPropertyId) {
-  const name = localizeText(property?.name) || "";
-  if (!name) {
-    return null;
+  const data = event.data || {};
+  if (data.source !== "BRICKS_CHECK_PAGE" || data.type !== "BRICKS_AUTH_TOKEN" || !data.token) {
+    return;
   }
 
-  const listingStatus = property?.listingStatus || "ongoing";
-  if (listingStatus !== "ongoing") {
-    return null;
-  }
-
-  const startedAt = property?.funding?.startedAt ? new Date(property.funding.startedAt) : null;
-  if (startedAt && startedAt.getTime() > Date.now()) {
-    return null;
-  }
-
-  const brickPriceCents = Number(property?.funding?.brickPrice ?? property?.brickPrice ?? 1000);
-  const targetAmountCents = Number(property?.funding?.amountToFundCents ?? 0);
-  const purchasedBrickCount = Number(property?.funding?.purchasedBrickCount ?? 0);
-  const autoInvestPurchasedBrickCount = Number(property?.funding?.autoInvestPurchasedBrickCount ?? 0);
-  const investedAmountCents = (purchasedBrickCount + autoInvestPurchasedBrickCount) * brickPriceCents;
-  const availableAmountCents = Math.max(0, targetAmountCents - investedAmountCents);
-  const brickPrice = centsToEuros(brickPriceCents) || 10;
-  const availableBricks = brickPriceCents > 0 ? Math.floor(availableAmountCents / brickPriceCents) : 0;
-
-  if (availableBricks <= 0 || targetAmountCents <= 0 || property?.hasBricksAvailable === false) {
-    return null;
-  }
-
-  const ownedBricks =
-    normalizeOwnedBricks(property?.ownedBricks) ??
-    normalizeOwnedBricks(property?.investorBricks?.owned) ??
-    normalizeOwnedBricks(ownedBricksByPropertyId.get(property.id)) ??
-    0;
-
-  return {
-    id: property.id || slugify(name),
-    name,
-    availableAmount: centsToEuros(availableAmountCents),
-    availableBricks,
-    brickPrice,
-    investedAmount: centsToEuros(investedAmountCents),
-    targetAmount: centsToEuros(targetAmountCents),
-    ownedBricks,
-    ownedBricksSource: "api",
-    status: "Collecte en cours",
-    url: property.id ? `https://app.bricks.co/project/${property.id}` : location.href
-  };
-}
-
-function buildOwnedBricksByPropertyId(portfolio) {
-  const ownedBricksByPropertyId = new Map();
-  const projects = [
-    ...((portfolio?.ongoing) || []),
-    ...((portfolio?.refunded) || [])
-  ];
-
-  for (const project of projects) {
-    if (project?.propertyId) {
-      ownedBricksByPropertyId.set(project.propertyId, project.brickCount);
-    }
-  }
-
-  return ownedBricksByPropertyId;
-}
-
-function localizeText(value) {
-  if (typeof value === "string") {
-    return value;
-  }
-
-  if (value && typeof value === "object") {
-    return value.fr || value.en || Object.values(value).find((text) => typeof text === "string") || "";
-  }
-
-  return "";
-}
-
-function centsToEuros(value) {
-  const cents = Number(value || 0);
-  return Number.isFinite(cents) ? Number((cents / 100).toFixed(2)) : 0;
-}
-
-function normalizeOwnedBricks(value) {
-  if (value === null || value === undefined) {
-    return null;
-  }
-
-  const numericValue = Number(value);
-  return Number.isFinite(numericValue) && numericValue >= 0 ? numericValue : null;
-}
+  chrome.runtime.sendMessage({ type: "BRICKS_AUTH_TOKEN", token: data.token }).catch(() => {});
+});
 
 function clickProjectByName(projectName) {
   const wantedName = normalizeProjectName(projectName);
