@@ -133,7 +133,7 @@ function clearShortInterval() {
 async function runCheck() {
   const options = await getOptions();
   if (!options.enabled) {
-    return saveLastCheck({ checkedAt: Date.now(), matches: [], skipped: true });
+    return saveLastCheck({ checkedAt: Date.now(), matches: [], availableProjects: [], skipped: true });
   }
 
   const projects = await scanOpenBricksTabs();
@@ -141,6 +141,7 @@ async function runCheck() {
     return saveLastCheck({
       checkedAt: Date.now(),
       matches: [],
+      availableProjects: [],
       projectCount: 0,
       message: "Aucun projet trouvé. Vérifiez votre connexion sur Bricks.co."
     });
@@ -152,10 +153,11 @@ async function runCheck() {
 async function handleProjects(projects) {
   const options = await getOptions();
   if (!options.enabled) {
-    return saveLastCheck({ checkedAt: Date.now(), matches: [], skipped: true });
+    return saveLastCheck({ checkedAt: Date.now(), matches: [], availableProjects: [], skipped: true });
   }
 
   const matches = projects.filter((project) => shouldNotifyProject(project, options));
+  const availableProjects = summarizeAvailableProjects(projects);
   const shouldNotify = matches.length > 0;
   let notificationCount = 0;
 
@@ -168,6 +170,7 @@ async function handleProjects(projects) {
     checkedAt: Date.now(),
     projectCount: projects.length,
     matches,
+    availableProjects,
     notificationSent: notificationCount > 0,
     notificationCount
   });
@@ -464,6 +467,23 @@ function shouldNotifyProject(project, options) {
   }
 
   return Number(project.ownedBricks) < Number(options.ownedThreshold);
+}
+
+function summarizeAvailableProjects(projects) {
+  return projects
+    .filter((project) => Number(project.availableBricks || 0) > 0)
+    .map((project) => ({
+      id: project.id || project.name || "",
+      name: project.name || "Projet Bricks",
+      availableBricks: Math.max(0, Number(project.availableBricks || 0)),
+      ownedBricks: hasKnownOwnedBricks(project.ownedBricks) ? Number(project.ownedBricks) : null,
+      ownedBricksSource: project.ownedBricksSource || "",
+      url: isProjectUrl(project.url) ? sanitizeBricksUrl(project.url) : ""
+    }))
+    .sort((left, right) => {
+      const byAvailableBricks = right.availableBricks - left.availableBricks;
+      return byAvailableBricks || left.name.localeCompare(right.name, "fr");
+    });
 }
 
 async function notifyProjects(matches, options) {

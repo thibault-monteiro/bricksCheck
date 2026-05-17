@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Réglages Bricks Check</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <div>
+          <h1>Réglages Bricks Check</h1>
+          <p>Configuration de la surveillance et des notifications.</p>
+        </div>
+      </header>
+
+      <section class="panel">
+        <div class="setting-row">
+          <div>
+            <h2>Surveillance</h2>
+            <p id="statusText">Chargement...</p>
+          </div>
+          <label class="switch" title="Activer la surveillance">
+            <input id="enabled" type="checkbox">
+            <span></span>
+          </label>
+        </div>
+
+        <div class="grid">
+          <label class="field">
+            <span>Seuil personnel</span>
+            <input id="ownedThreshold" type="number" min="0" step="1">
+          </label>
+          <label class="field">
+            <span>Intervalle</span>
+            <select id="intervalMinutes">
+              <option value="0.166">10 sec</option>
+              <option value="0.5">30 sec</option>
+              <option value="1">1 min</option>
+              <option value="5">5 min</option>
+              <option value="15">15 min</option>
+              <option value="30">30 min</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="check">
+          <input id="notifyWhenBelowThreshold" type="checkbox">
+          <span>Notifier si un projet a des bricks disponibles et que j'en ai moins que le seuil.</span>
+        </label>
+
+        <div class="actions">
+          <button id="saveButton" type="button">Enregistrer</button>
+          <button id="checkNowButton" type="button" class="secondary">Tester maintenant</button>
+          <button id="clearNotificationsButton" type="button" class="secondary">Purger notifications</button>
+        </div>
+
+        <p id="feedbackText" class="feedback" role="status"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Dernier état</h2>
+        <p id="nextCheckText" class="countdown">Prochaine vérification: --</p>
+        <p id="lastCheckText" class="muted"></p>
+      </section>
+
+      <p class="disclaimer">
+        Extension indépendante de Bricks.co. Ne constitue pas un conseil en investissement.
+      </p>
+    </main>
+    <script src="options.js" type="module"></script>
+  </body>
+</html>

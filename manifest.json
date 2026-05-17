@@ -44,6 +44,7 @@
   "icons": {
     "128": "icon-128.png"
   },
+  "options_page": "options.html",
   "background": {
     "service_worker": "service_worker.js",
     "type": "module"

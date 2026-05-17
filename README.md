@@ -16,7 +16,8 @@ Bricks Check est une extension indépendante et non officielle. Elle n'est pas a
 - Vérification automatique toutes les minutes par défaut.
 - Une notification Chrome par projet correspondant.
 - Le clic sur une notification ouvre un nouvel onglet Bricks et tente d'ouvrir le projet concerné.
-- Compteur dans le popup pour voir la prochaine vérification.
+- Popup épuré avec le toggle de surveillance, le compteur, le dernier résultat et les collectes avec briques disponibles.
+- Page de configuration accessible depuis la roue crantée du popup.
 
 ## Installation locale
 
@@ -25,11 +26,12 @@ Bricks Check est une extension indépendante et non officielle. Elle n'est pas a
 3. Cliquer sur `Charger l'extension non empaquetée`.
 4. Sélectionner ce dossier.
 5. Ouvrir `https://app.bricks.co` dans un onglet pour que l'extension capte le token d'authentification.
-6. Ouvrir le popup Bricks Check, activer la surveillance, puis cliquer sur `Enregistrer`.
+6. Ouvrir le popup Bricks Check, cliquer sur la roue crantée, activer la surveillance, puis cliquer sur `Enregistrer`.
 7. L'onglet Bricks peut ensuite être fermé — l'extension fonctionne en arrière-plan.
 
 ## Réglages
 
+- `Surveillance` : active ou désactive les vérifications automatiques.
 - `Seuil personnel` : nombre de briques à atteindre sur chaque projet.
 - `Intervalle` : fréquence de vérification.
 - `Notifier si...` : déclenche les notifications quand un projet a des briques disponibles et que votre nombre de briques est inférieur au seuil.
@@ -66,4 +68,5 @@ Le `service_worker` stocke le token dans `chrome.storage.local` et appelle direc
 - `api_bridge.js` : script injecté dans le monde `MAIN` pour lire le token Bricks.
 - `content_script.js` : relais du token vers le service worker, navigation au clic sur notification.
 - `service_worker.js` : appels API directs, cache token et briques, notifications et planification.
-- `popup.html`, `popup.css`, `popup.js` : interface de réglage.
+- `popup.html`, `popup.css`, `popup.js` : popup de statut.
+- `options.html`, `options.css`, `options.js` : interface de réglage.

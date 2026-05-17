@@ -7,126 +7,78 @@ const DEFAULT_OPTIONS = {
 
 const elements = {
   enabled: document.querySelector("#enabled"),
-  intervalMinutes: document.querySelector("#intervalMinutes"),
-  ownedThreshold: document.querySelector("#ownedThreshold"),
-  notifyWhenBelowThreshold: document.querySelector("#notifyWhenBelowThreshold"),
-  saveButton: document.querySelector("#saveButton"),
-  checkNowButton: document.querySelector("#checkNowButton"),
-  clearNotificationsButton: document.querySelector("#clearNotificationsButton"),
+  openOptionsButton: document.querySelector("#openOptionsButton"),
   statusText: document.querySelector("#statusText"),
   nextCheckText: document.querySelector("#nextCheckText"),
-  lastCheckText: document.querySelector("#lastCheckText")
+  lastCheckText: document.querySelector("#lastCheckText"),
+  availableProjects: document.querySelector("#availableProjects")
 };
 
 let nextAlarmTime = null;
+let monitoringEnabled = false;
 let countdownTimerId = null;
 
 init();
 
 async function init() {
-  const { options = DEFAULT_OPTIONS } = await chrome.storage.sync.get({
-    options: DEFAULT_OPTIONS
-  });
-  const { lastCheck } = await chrome.storage.local.get("lastCheck");
-
-  renderOptions({ ...DEFAULT_OPTIONS, ...options });
-  renderLastCheck(lastCheck);
-
-  elements.saveButton.addEventListener("click", saveOptions);
-  elements.checkNowButton.addEventListener("click", checkNow);
-  elements.clearNotificationsButton.addEventListener("click", clearNotifications);
+  elements.enabled.addEventListener("change", toggleMonitoring);
+  elements.openOptionsButton.addEventListener("click", openOptions);
 
   await refreshAlarmStatus();
   countdownTimerId = setInterval(renderCountdown, 1000);
 }
 
-function renderOptions(options) {
-  elements.enabled.checked = options.enabled;
-  elements.intervalMinutes.value = String(options.intervalMinutes);
-  elements.ownedThreshold.value = String(options.ownedThreshold);
-  elements.notifyWhenBelowThreshold.checked = options.notifyWhenBelowThreshold;
-  elements.statusText.textContent = options.enabled ? "Surveillance active" : "Surveillance inactive";
+async function openOptions() {
+  if (chrome.runtime.openOptionsPage) {
+    await chrome.runtime.openOptionsPage();
+    return;
+  }
+
+  await chrome.tabs.create({ url: chrome.runtime.getURL("options.html") });
 }
 
-function readOptions() {
-  return {
-    enabled: elements.enabled.checked,
-    intervalMinutes: Number(elements.intervalMinutes.value),
-    ownedThreshold: Math.max(0, Number(elements.ownedThreshold.value || 0)),
-    notifyWhenBelowThreshold: elements.notifyWhenBelowThreshold.checked
-  };
-}
-
-async function saveOptions() {
-  const options = readOptions();
-  elements.saveButton.disabled = true;
+async function toggleMonitoring() {
+  const enabled = elements.enabled.checked;
+  elements.enabled.disabled = true;
 
   try {
-    await chrome.storage.sync.set({ options });
+    const { options = DEFAULT_OPTIONS } = await chrome.storage.sync.get({
+      options: DEFAULT_OPTIONS
+    });
+    const nextOptions = { ...DEFAULT_OPTIONS, ...options, enabled };
+    await chrome.storage.sync.set({ options: nextOptions });
     await chrome.runtime.sendMessage({ type: "OPTIONS_UPDATED" });
-    renderOptions(options);
-    elements.lastCheckText.textContent = "Réglages enregistrés.";
+    monitoringEnabled = enabled;
+    elements.statusText.textContent = enabled ? "Surveillance active" : "Surveillance inactive";
     await refreshAlarmStatus();
+  } catch {
+    elements.enabled.checked = monitoringEnabled;
+    elements.statusText.textContent = "Statut indisponible";
   } finally {
-    elements.saveButton.disabled = false;
-  }
-}
-
-async function checkNow() {
-  elements.checkNowButton.disabled = true;
-  elements.lastCheckText.textContent = "Vérification en cours...";
-
-  try {
-    await saveOptions();
-    const response = await chrome.runtime.sendMessage({ type: "CHECK_NOW" });
-    if (!response?.ok) {
-      elements.lastCheckText.textContent = response?.error || "La vérification a échoué.";
-      return;
-    }
-
-    renderLastCheck(response.lastCheck);
-    await refreshAlarmStatus();
-  } finally {
-    elements.checkNowButton.disabled = false;
-  }
-}
-
-async function clearNotifications() {
-  elements.clearNotificationsButton.disabled = true;
-
-  try {
-    const response = await chrome.runtime.sendMessage({ type: "CLEAR_NOTIFICATIONS" });
-    if (!response?.ok) {
-      elements.lastCheckText.textContent = response?.error || "La purge des notifications a échoué.";
-      return;
-    }
-
-    const clearedCount = response.clearedCount || 0;
-    elements.lastCheckText.textContent =
-      clearedCount > 0
-        ? `${clearedCount} notification(s) purgée(s).`
-        : "Aucune notification active à purger.";
-  } finally {
-    elements.clearNotificationsButton.disabled = false;
+    elements.enabled.disabled = false;
   }
 }
 
 async function refreshAlarmStatus() {
   try {
     const response = await chrome.runtime.sendMessage({ type: "GET_STATUS" });
+    monitoringEnabled = Boolean(response?.enabled);
+    elements.enabled.checked = monitoringEnabled;
     nextAlarmTime = response?.nextCheckAt || null;
-    if (response?.lastCheck) {
-      renderLastCheck(response.lastCheck);
-    }
+    elements.statusText.textContent = monitoringEnabled ? "Surveillance active" : "Surveillance inactive";
+    renderLastCheck(response?.lastCheck || null);
   } catch {
+    monitoringEnabled = false;
+    elements.enabled.checked = false;
     nextAlarmTime = null;
+    elements.statusText.textContent = "Statut indisponible";
   }
 
   renderCountdown();
 }
 
 function renderCountdown() {
-  if (!elements.enabled.checked) {
+  if (!monitoringEnabled) {
     elements.nextCheckText.textContent = "Prochaine vérification: surveillance inactive";
     return;
   }
@@ -151,6 +103,7 @@ function renderCountdown() {
 function renderLastCheck(lastCheck) {
   if (!lastCheck) {
     elements.lastCheckText.textContent = "Aucune vérification effectuée.";
+    renderAvailableProjects(null);
     return;
   }
 
@@ -165,4 +118,84 @@ function renderLastCheck(lastCheck) {
         : "";
   const suffix = lastCheck.message ? ` ${lastCheck.message}` : notification || " Pas de notification envoyée.";
   elements.lastCheckText.textContent = `${checkedAt} - ${count} projet(s) correspondant aux réglages.${suffix}`;
+  renderAvailableProjects(lastCheck);
+}
+
+function renderAvailableProjects(lastCheck) {
+  if (!lastCheck || lastCheck.skipped) {
+    elements.availableProjects.hidden = true;
+    elements.availableProjects.replaceChildren();
+    return;
+  }
+
+  const projects = getAvailableProjects(lastCheck);
+  const title = document.createElement("p");
+  title.className = "projects-title";
+  title.textContent = `Collectes avec briques disponibles (${projects.length})`;
+
+  if (projects.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "projects-empty";
+    empty.textContent = "Aucun projet en collecte avec briques disponibles.";
+    elements.availableProjects.replaceChildren(title, empty);
+    elements.availableProjects.hidden = false;
+    return;
+  }
+
+  const list = document.createElement("ul");
+  list.className = "projects-list";
+
+  for (const project of projects) {
+    const item = document.createElement("li");
+    item.className = "project";
+
+    const name = document.createElement(project.url ? "a" : "span");
+    name.className = "project-name";
+    name.textContent = project.name || "Projet Bricks";
+    if (project.url) {
+      name.href = project.url;
+      name.target = "_blank";
+      name.rel = "noopener noreferrer";
+    }
+
+    const details = document.createElement("span");
+    details.className = "project-details";
+    const availableBricks = Math.max(0, Number(project.availableBricks || 0));
+    const ownedBricks = normalizeOwnedBricks(project.ownedBricks);
+    details.textContent =
+      ownedBricks === null
+        ? `${formatInteger(availableBricks)} dispo`
+        : `${formatInteger(availableBricks)} dispo · ${formatInteger(ownedBricks)} possédée(s)`;
+
+    item.replaceChildren(name, details);
+    list.append(item);
+  }
+
+  elements.availableProjects.replaceChildren(title, list);
+  elements.availableProjects.hidden = false;
+}
+
+function getAvailableProjects(lastCheck) {
+  const projects = Array.isArray(lastCheck.availableProjects)
+    ? lastCheck.availableProjects
+    : Array.isArray(lastCheck.matches)
+      ? lastCheck.matches
+      : [];
+
+  return projects.filter((project) => Number(project.availableBricks || 0) > 0);
+}
+
+function normalizeOwnedBricks(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) && numericValue >= 0 ? numericValue : null;
+}
+
+function formatInteger(value) {
+  return new Intl.NumberFormat("fr-FR", {
+    maximumFractionDigits: 0
+  }).format(Number(value || 0));
 }
