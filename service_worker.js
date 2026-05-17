@@ -102,7 +102,7 @@ async function runCheck() {
       checkedAt: Date.now(),
       matches: [],
       projectCount: 0,
-      message: "Aucun onglet app.bricks.co lisible. Ouvrez la page Projets Bricks."
+      message: "Aucun projet trouvé. Vérifiez votre connexion sur Bricks.co."
     });
   }
 
@@ -157,9 +157,14 @@ async function getStatus() {
 }
 
 async function scanOpenBricksTabs() {
-  const allTabs = await chrome.tabs.query({ url: "https://app.bricks.co/*" });
+  let allTabs = await chrome.tabs.query({ url: "https://app.bricks.co/*" });
+
   if (allTabs.length === 0) {
-    return [];
+    console.log("[BricksCheck] No Bricks tab found, opening one");
+    const tab = await chrome.tabs.create({ url: "https://app.bricks.co/", active: false });
+    await waitForTabComplete(tab.id);
+    await wait(2000);
+    allTabs = [tab];
   }
 
   // Priorité : premier onglet épinglé, sinon tous les onglets
