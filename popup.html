@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Bricks Check</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <div>
+          <h1>Bricks Check</h1>
+          <p id="statusText">Chargement...</p>
+        </div>
+        <label class="switch" title="Activer la surveillance">
+          <input id="enabled" type="checkbox">
+          <span></span>
+        </label>
+      </header>
+
+      <section class="section">
+        <div class="grid">
+          <label class="field">
+            <span>Seuil personnel</span>
+            <input id="ownedThreshold" type="number" min="0" step="1">
+          </label>
+          <label class="field">
+            <span>Intervalle</span>
+            <select id="intervalMinutes">
+              <option value="1">1 min</option>
+              <option value="5">5 min</option>
+              <option value="15">15 min</option>
+              <option value="30">30 min</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="check">
+          <input id="notifyWhenBelowThreshold" type="checkbox">
+          <span>Notifier si un projet a des bricks disponibles et que j'en ai moins que le seuil.</span>
+        </label>
+
+        <label class="check">
+          <input id="reloadBeforeCheck" type="checkbox">
+          <span>Actualiser l'onglet Bricks avant chaque vérification.</span>
+        </label>
+
+      </section>
+
+      <section class="section">
+        <div class="actions">
+          <button id="saveButton" type="button">Enregistrer</button>
+          <button id="checkNowButton" type="button" class="secondary">Tester</button>
+        </div>
+        <p id="nextCheckText" class="countdown">Prochaine vérification: --</p>
+        <p id="lastCheckText" class="muted"></p>
+      </section>
+    </main>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>
