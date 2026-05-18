@@ -141,7 +141,8 @@ async function runAutoInvest(intent) {
 
   // Step 6: tick the terms-of-service / acknowledgement checkbox on the
   // confirmation view. Best-effort — if there isn't one within 5s, we stop
-  // silently. We never click the final "Investir" button, that's on the user.
+  // silently. We never click the final "Investir" button unless autopilot
+  // is on.
   log("step 6: waiting for terms / acknowledgement checkbox");
   const stepDeadline = Math.min(deadline, Date.now() + 5000);
   const termsCheckbox = await waitForElement(findTermsCheckbox, { until: stepDeadline });
@@ -150,13 +151,51 @@ async function runAutoInvest(intent) {
     dumpCheckboxCandidates();
     return;
   }
-  if (isChecked(termsCheckbox)) {
+  if (!isChecked(termsCheckbox)) {
+    log("step 6 OK, ticking checkbox", termsCheckbox);
+    const ok = tickCheckbox(termsCheckbox);
+    log("step 6 result: isChecked=", isChecked(termsCheckbox), "tickCheckbox returned=", ok);
+  } else {
     log("step 6: checkbox already checked");
+  }
+
+  // Step 7: autopilot only — click the now-enabled "Investir X €" button.
+  // We give React a moment to flip aria-disabled off, then poll for an
+  // enabled button matching the amount label.
+  if (!intent.autopilot) {
     return;
   }
-  log("step 6 OK, ticking checkbox", termsCheckbox);
-  const ok = tickCheckbox(termsCheckbox);
-  log("step 6 result: isChecked=", isChecked(termsCheckbox), "tickCheckbox returned=", ok);
+  log("step 7: autopilot — waiting for final 'Investir X €' button to enable");
+  await wait(300);
+  const investDeadline = Math.min(deadline, Date.now() + 5000);
+  const finalInvestButton = await waitForElement(() => findFinalInvestButton(modal), { until: investDeadline });
+  if (!finalInvestButton) {
+    log("step 7 FAILED: final invest button never became clickable");
+    return;
+  }
+  log("step 7 OK, clicking final 'Investir' button", finalInvestButton);
+  clickElement(finalInvestButton);
+}
+
+/**
+ * Finds the final "Investir X €" submit button inside the modal,
+ * provided it is enabled. Used only in autopilot mode. The regex
+ * deliberately requires a digit after "Investir " so we don't pick
+ * up the page-level "Investir maintenant" button or the "Continuer"
+ * label.
+ */
+function findFinalInvestButton(modal) {
+  const root = modal || document;
+  const buttons = root.querySelectorAll("button, [role='button']");
+  for (const button of buttons) {
+    if (!isVisible(button)) continue;
+    if (button.disabled || button.getAttribute("aria-disabled") === "true") continue;
+    const text = normalizedText(button);
+    if (/^investir\s+\d/.test(text)) {
+      return button;
+    }
+  }
+  return null;
 }
 
 /**

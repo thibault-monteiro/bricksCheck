@@ -1,6 +1,6 @@
 {
   "name": "bricks-check",
-  "version": "0.7.5",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "scripts": {

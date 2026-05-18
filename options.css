@@ -126,6 +126,18 @@ select:focus {
   margin-top: 2px;
 }
 
+.check.danger {
+  background: #fff5f0;
+  border: 1px solid #f3b08e;
+  border-radius: 6px;
+  color: #8a3a1a;
+  padding: 10px 12px;
+}
+
+.check.danger strong {
+  color: #6b2a13;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

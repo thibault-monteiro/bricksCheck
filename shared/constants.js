@@ -5,7 +5,9 @@ export const DEFAULT_OPTIONS = {
   enabled: false,
   intervalMinutes: 1,
   ownedThreshold: 100,
-  notifyWhenBelowThreshold: true
+  notifyWhenBelowThreshold: true,
+  playSoundOnNotification: false,
+  autopilotEnabled: false
 };
 
 export const AUTH_TOKEN_KEY = "bricksAuthToken";

@@ -16,6 +16,8 @@ const OWNED_BRICKS_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const MAX_TOKEN_REFRESH_RETRIES = 1;
 const PENDING_INVEST_INTENT_KEY = "pendingInvestIntent";
 const PENDING_INVEST_INTENT_TTL_MS = 2 * 60 * 1000;
+const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
+const PLAY_SOUND_MESSAGE_TYPE = "BRICKS_PLAY_SOUND";
 
 // Toggle to enable console output. Default false in production.
 const DEBUG = false;
@@ -327,6 +329,46 @@ async function fetchBricksJson(apiPath, token) {
   return response.json();
 }
 
+/**
+ * Plays a short audible "ding-dong" so the user can catch a notification
+ * even when Windows is in fullscreen mode (which suppresses toast banners).
+ *
+ * Off by default — gated on `options.playSoundOnNotification`. MV3 service
+ * workers can't use the Web Audio API directly, so we route playback
+ * through an offscreen document with the AUDIO_PLAYBACK reason.
+ *
+ * Best-effort: failures here never block the notification.
+ */
+async function playNotificationSound() {
+  try {
+    const options = await getOptions();
+    if (!options.playSoundOnNotification) return;
+    await ensureOffscreenDocument();
+    await chrome.runtime.sendMessage({ type: PLAY_SOUND_MESSAGE_TYPE });
+  } catch (error) {
+    log("playNotificationSound failed:", error?.message || error);
+  }
+}
+
+let ensureOffscreenInFlight = null;
+
+async function ensureOffscreenDocument() {
+  if (await chrome.offscreen.hasDocument()) return;
+  // Coalesce concurrent calls — createDocument throws if invoked twice in parallel.
+  if (!ensureOffscreenInFlight) {
+    ensureOffscreenInFlight = chrome.offscreen
+      .createDocument({
+        url: OFFSCREEN_DOCUMENT_PATH,
+        reasons: ["AUDIO_PLAYBACK"],
+        justification: "Play a sound when a Bricks notification fires so the user notices it in fullscreen."
+      })
+      .finally(() => {
+        ensureOffscreenInFlight = null;
+      });
+  }
+  await ensureOffscreenInFlight;
+}
+
 async function notifyApiFailure(errorMessage) {
   const notificationId = `bricks-api-error-${generateUniqueId()}`;
 
@@ -344,6 +386,7 @@ async function notifyApiFailure(errorMessage) {
     message: `Impossible de récupérer les projets. ${errorMessage || "Reconnectez-vous sur Bricks.co."}`,
     priority: 2
   });
+  playNotificationSound();
 
   await trackNotification(notificationId);
 }
@@ -444,6 +487,7 @@ async function notifyProjects(matches, options) {
       message,
       priority: 2
     });
+    playNotificationSound();
 
     await trackNotification(notificationId);
     await saveNotificationTarget(notificationId, {
@@ -454,6 +498,11 @@ async function notifyProjects(matches, options) {
       brickPrice: Number(project.brickPrice) || 10
     });
     createdCount += 1;
+
+    if (options.autopilotEnabled && buyableBricks > 0) {
+      log("Autopilot: triggering buy for", project.name);
+      await openNotificationProject(notificationId, { autopilot: true });
+    }
   }
 
   return createdCount;
@@ -533,12 +582,14 @@ async function deleteNotificationState(notificationId) {
   await chrome.alarms.clear(getClearNotificationAlarmName(notificationId));
 }
 
-async function openNotificationProject(notificationId) {
+async function openNotificationProject(notificationId, { autopilot = false } = {}) {
   const { notificationLinks = {} } = await chrome.storage.local.get("notificationLinks");
   const target = normalizeNotificationTarget(notificationLinks[notificationId]);
 
   // Record an auto-invest intent if we have a target with a positive brick count.
-  // The content script will pick it up when the project page loads.
+  // The content script will pick it up when the project page loads. When
+  // `autopilot` is true the content script also clicks the final "Investir X €"
+  // button, so the buy happens entirely without user input.
   if (target?.projectId && target.bricksToInvest > 0) {
     await chrome.storage.local.set({
       [PENDING_INVEST_INTENT_KEY]: {
@@ -546,24 +597,28 @@ async function openNotificationProject(notificationId) {
         bricksToInvest: target.bricksToInvest,
         brickPrice: target.brickPrice,
         amountEuros: bricksToInvestEuros(target.bricksToInvest, target.brickPrice),
+        autopilot,
         createdAt: Date.now()
       }
     });
-    log("Stored invest intent", target.projectId, target.bricksToInvest, "bricks");
+    log("Stored invest intent", target.projectId, target.bricksToInvest, "bricks", { autopilot });
   }
 
   // Open the tab BEFORE clearing state, so a failure to open does not lose the target.
+  // Autopilot opens in the background to avoid stealing focus; manual notification
+  // clicks open in the foreground because the user explicitly asked to see the page.
+  const openActive = !autopilot;
   let opened = true;
   if (target?.url) {
     try {
-      await chrome.tabs.create({ url: target.url });
+      await chrome.tabs.create({ url: target.url, active: openActive });
     } catch (error) {
       log("Failed to open project tab", error);
       opened = false;
     }
   } else if (target) {
     try {
-      await chrome.tabs.create({ url: `${APP_ORIGIN}/projects` });
+      await chrome.tabs.create({ url: `${APP_ORIGIN}/projects`, active: openActive });
     } catch (error) {
       log("Failed to open projects listing", error);
       opened = false;

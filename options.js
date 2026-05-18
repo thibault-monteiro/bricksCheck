@@ -5,6 +5,8 @@ const elements = {
   intervalMinutes: document.querySelector("#intervalMinutes"),
   ownedThreshold: document.querySelector("#ownedThreshold"),
   notifyWhenBelowThreshold: document.querySelector("#notifyWhenBelowThreshold"),
+  playSoundOnNotification: document.querySelector("#playSoundOnNotification"),
+  autopilotEnabled: document.querySelector("#autopilotEnabled"),
   saveButton: document.querySelector("#saveButton"),
   checkNowButton: document.querySelector("#checkNowButton"),
   clearNotificationsButton: document.querySelector("#clearNotificationsButton"),
@@ -47,6 +49,8 @@ function renderOptions(options) {
   elements.intervalMinutes.value = String(options.intervalMinutes);
   elements.ownedThreshold.value = String(options.ownedThreshold);
   elements.notifyWhenBelowThreshold.checked = options.notifyWhenBelowThreshold;
+  elements.playSoundOnNotification.checked = options.playSoundOnNotification;
+  elements.autopilotEnabled.checked = options.autopilotEnabled;
   elements.statusText.textContent = options.enabled ? "Surveillance active" : "Surveillance inactive";
 }
 
@@ -55,7 +59,9 @@ function readOptions() {
     enabled: elements.enabled.checked,
     intervalMinutes: Number(elements.intervalMinutes.value),
     ownedThreshold: Math.max(0, Number(elements.ownedThreshold.value || 0)),
-    notifyWhenBelowThreshold: elements.notifyWhenBelowThreshold.checked
+    notifyWhenBelowThreshold: elements.notifyWhenBelowThreshold.checked,
+    playSoundOnNotification: elements.playSoundOnNotification.checked,
+    autopilotEnabled: elements.autopilotEnabled.checked
   };
 }
 
