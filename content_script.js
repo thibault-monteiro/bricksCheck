@@ -259,55 +259,87 @@ function isChecked(el) {
 }
 
 /**
- * Finds an unchecked checkbox whose surrounding text suggests it is the
- * terms-of-service / acknowledgement checkbox.
+ * Finds the terms-of-service / acknowledgement checkbox. Tries, in order:
  *
- * Bricks runs on React Native Web + Radix, so the "checkbox" may be:
- *   - <input type="checkbox"> (rare here, often hidden)
- *   - element with role="checkbox" (Radix Checkbox button)
- *   - element with aria-checked or data-state="unchecked" (RN Web View
- *     with accessibilityRole="checkbox", custom widgets)
- *
- * We do NOT require the element itself to be visible — styled checkboxes
- * often hide the interactive node and route clicks through a wrapper.
+ *   A. Strict checkbox semantics — <input type=checkbox>, [role=checkbox],
+ *      [aria-checked], [data-state] — whose surrounding text matches a
+ *      terms keyword.
+ *   B. React Native Web Pressable — a [tabindex="0"] row whose own text
+ *      starts with "En cochant" / similar. Bricks uses this pattern: no
+ *      role, no aria-checked, the visual box is a sibling <div>, and the
+ *      "checked" state lives entirely in React state. We can still click
+ *      the row; we just can't verify the checked-state afterwards.
  */
 function findTermsCheckbox() {
-  const selector = "input[type='checkbox'], [role='checkbox'], [aria-checked], [data-state='unchecked'], [data-state='checked']";
-  const candidates = document.querySelectorAll(selector);
-
-  for (const checkbox of candidates) {
+  // Path A: strict checkbox semantics.
+  const strictSelector = "input[type='checkbox'], [role='checkbox'], [aria-checked], [data-state='unchecked'], [data-state='checked']";
+  const strict = document.querySelectorAll(strictSelector);
+  for (const checkbox of strict) {
     if (isChecked(checkbox)) continue;
-
-    let ancestor = checkbox.parentElement;
-    let hasVisibleAncestor = false;
-    for (let depth = 0; depth < 8 && ancestor; depth += 1) {
-      if (!hasVisibleAncestor && isVisible(ancestor)) {
-        hasVisibleAncestor = true;
-      }
-      const text = (ancestor.textContent || "").toLowerCase();
-      if (hasVisibleAncestor && TERMS_KEYWORDS.some((kw) => text.includes(kw))) {
-        return checkbox;
-      }
-      ancestor = ancestor.parentElement;
-    }
+    if (ancestorTextMatchesTerms(checkbox)) return checkbox;
   }
+
+  // Path B: RN Web Pressable row.
+  const pressables = document.querySelectorAll("[tabindex='0']");
+  for (const press of pressables) {
+    if (!isVisible(press)) continue;
+    const text = (press.textContent || "").toLowerCase();
+    if (text.length > 300) continue; // row, not the whole modal
+    if (!TERMS_KEYWORDS.some((kw) => text.includes(kw))) continue;
+    return press;
+  }
+
   return null;
 }
 
+function ancestorTextMatchesTerms(el) {
+  let ancestor = el.parentElement;
+  let hasVisibleAncestor = false;
+  for (let depth = 0; depth < 8 && ancestor; depth += 1) {
+    if (!hasVisibleAncestor && isVisible(ancestor)) hasVisibleAncestor = true;
+    const text = (ancestor.textContent || "").toLowerCase();
+    if (hasVisibleAncestor && TERMS_KEYWORDS.some((kw) => text.includes(kw))) {
+      return true;
+    }
+    ancestor = ancestor.parentElement;
+  }
+  return false;
+}
+
 /**
- * Ticks a checkbox the way a real user would. Bricks renders checkboxes
- * via React Native Web / Radix, so the interactive node is often a
- * <button role="checkbox"> or <div aria-checked> — calling `.click()`
- * on a hidden underlying <input> is a no-op.
+ * True if `el` has any explicit "checkbox" semantics we can read back to
+ * verify the toggle worked. False for RN Web Pressables which expose no
+ * checked-state to the DOM.
+ */
+function hasReadableCheckedState(el) {
+  if (el instanceof HTMLInputElement && el.type === "checkbox") return true;
+  const role = el.getAttribute && el.getAttribute("role");
+  if (role === "checkbox") return true;
+  if (el.hasAttribute && (el.hasAttribute("aria-checked") || el.hasAttribute("data-state"))) return true;
+  return false;
+}
+
+/**
+ * Ticks a checkbox or terms-row Pressable.
  *
- * Strategy, in order, stopping as soon as `isChecked` becomes true:
- *   1. click the associated <label>
- *   2. click the element directly (works for role=checkbox button)
- *   3. click the closest visible ancestor (the styled wrapper / row)
- *   4. for real <input>, force `.checked` via the native setter
+ * For RN Web Pressables (no readable checked-state), we click once and
+ * trust. Clicking twice would untoggle.
+ *
+ * For semantic checkboxes (input / role=checkbox / aria-checked), we try
+ * multiple strategies and stop as soon as `isChecked` becomes true:
+ *   1. associated <label>
+ *   2. direct click (works for role=checkbox button)
+ *   3. closest visible ancestor (the styled wrapper)
+ *   4. native setter on `.checked` for real <input>
  */
 function tickCheckbox(checkbox) {
   if (isChecked(checkbox)) return true;
+
+  if (!hasReadableCheckedState(checkbox)) {
+    log("tickCheckbox: pressable (no checked-state to read), single click", checkbox);
+    clickElement(checkbox);
+    return true;
+  }
 
   // 1. Associated label.
   const id = checkbox.id;
@@ -324,7 +356,7 @@ function tickCheckbox(checkbox) {
     if (isChecked(checkbox)) return true;
   }
 
-  // 2. Direct click — works for role=checkbox, aria-checked widgets.
+  // 2. Direct click.
   log("tickCheckbox: clicking element directly", checkbox);
   clickElement(checkbox);
   if (isChecked(checkbox)) return true;
@@ -341,8 +373,7 @@ function tickCheckbox(checkbox) {
     ancestor = ancestor.parentElement;
   }
 
-  // 4. Real <input>: force `.checked = true` via the native setter so
-  // React's _valueTracker picks up the change, then fire change.
+  // 4. Real <input>: force `.checked = true` via the native setter.
   if (checkbox instanceof HTMLInputElement) {
     try {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked");
