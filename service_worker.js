@@ -1,17 +1,26 @@
+import { DEFAULT_OPTIONS, AUTH_TOKEN_KEY, API_ORIGIN, APP_ORIGIN } from "./shared/constants.js";
+import {
+  slugify,
+  normalizeOwnedBricks,
+  hasKnownOwnedBricks,
+  formatInteger,
+  centsToEuros
+} from "./shared/utils.js";
+
 const ALARM_NAME = "bricks-check";
 const CLEAR_NOTIFICATION_ALARM_PREFIX = "bricks-clear-notification:";
 const NOTIFICATION_TTL_MINUTES = 0.5;
 const OWNED_BRICKS_CACHE_KEY = "ownedBricksByProject";
 const OWNED_BRICKS_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const AUTH_TOKEN_KEY = "bricksAuthToken";
-const API_ORIGIN = "https://api.bricks.co";
+const MAX_TOKEN_REFRESH_RETRIES = 1;
 
-const DEFAULT_OPTIONS = {
-  enabled: false,
-  intervalMinutes: 1,
-  ownedThreshold: 100,
-  notifyWhenBelowThreshold: true
-};
+// Toggle to enable console output. Default false in production.
+const DEBUG = false;
+function log(...args) {
+  if (DEBUG) {
+    console.log("[BricksCheck]", ...args);
+  }
+}
 
 chrome.runtime.onInstalled.addListener(async () => {
   const { options } = await chrome.storage.sync.get("options");
@@ -77,7 +86,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "BRICKS_AUTH_TOKEN" && message.token) {
     chrome.storage.local.set({ [AUTH_TOKEN_KEY]: message.token });
-    console.log("[BricksCheck] Auth token cached");
+    log("Auth token cached");
     return false;
   }
 
@@ -98,7 +107,9 @@ async function syncAlarm() {
   const intervalMinutes = Number(options.intervalMinutes) || 1;
 
   if (intervalMinutes < 0.5) {
-    // chrome.alarms minimum is 30s; use setTimeout for shorter intervals
+    // chrome.alarms minimum is 30s; use setTimeout for shorter intervals.
+    // Note: setTimeout does not survive service worker suspension on MV3.
+    // For sub-30s intervals, ticking may pause until the next event wakes the SW.
     const intervalMs = Math.max(5000, intervalMinutes * 60 * 1000);
     scheduleShortInterval(intervalMs);
   } else {
@@ -199,16 +210,22 @@ async function getStatus() {
   };
 }
 
-async function scanOpenBricksTabs() {
+async function scanOpenBricksTabs(retryCount = 0) {
   const token = await getCachedToken();
   if (!token) {
-    console.log("[BricksCheck] No cached token, opening Bricks tab to get one");
+    if (retryCount >= MAX_TOKEN_REFRESH_RETRIES) {
+      log("No token after retry, giving up");
+      await notifyApiFailure("Aucun token Bricks. Connectez-vous sur Bricks.co.");
+      return [];
+    }
+
+    log("No cached token, opening Bricks tab to get one");
     const refreshed = await refreshTokenFromTab();
     if (!refreshed) {
       await notifyApiFailure("Aucun token Bricks. Connectez-vous sur Bricks.co.");
       return [];
     }
-    return scanOpenBricksTabs();
+    return scanOpenBricksTabs(retryCount + 1);
   }
 
   const result = await fetchBricksApiDirect(token);
@@ -216,23 +233,17 @@ async function scanOpenBricksTabs() {
     return applyOwnedBricksCache(dedupeProjects(result.projects));
   }
 
-  // Token may be expired — try to refresh it from a tab
-  if (result.httpStatus === 401 || result.httpStatus === 403) {
-    console.log("[BricksCheck] Token expired, refreshing from tab");
+  // Token may be expired — try to refresh it from a tab (once).
+  if ((result.httpStatus === 401 || result.httpStatus === 403) && retryCount < MAX_TOKEN_REFRESH_RETRIES) {
+    log("Token expired, refreshing from tab");
     await chrome.storage.local.remove(AUTH_TOKEN_KEY);
     const refreshed = await refreshTokenFromTab();
     if (refreshed) {
-      const retryToken = await getCachedToken();
-      if (retryToken) {
-        const retry = await fetchBricksApiDirect(retryToken);
-        if (retry.ok) {
-          return applyOwnedBricksCache(dedupeProjects(retry.projects));
-        }
-      }
+      return scanOpenBricksTabs(retryCount + 1);
     }
   }
 
-  console.log("[BricksCheck] API scan failed, notifying user");
+  log("API scan failed, notifying user");
   await notifyApiFailure(result.error);
   return [];
 }
@@ -243,14 +254,14 @@ async function getCachedToken() {
 }
 
 async function refreshTokenFromTab() {
-  const existingTabs = await chrome.tabs.query({ url: "https://app.bricks.co/*" });
+  const existingTabs = await chrome.tabs.query({ url: `${APP_ORIGIN}/*` });
   let tab;
 
   if (existingTabs.length > 0) {
     tab = existingTabs[0];
     await chrome.tabs.reload(tab.id);
   } else {
-    tab = await chrome.tabs.create({ url: "https://app.bricks.co/", active: false });
+    tab = await chrome.tabs.create({ url: `${APP_ORIGIN}/`, active: false });
   }
 
   await waitForTabComplete(tab.id);
@@ -268,7 +279,7 @@ async function fetchBricksApiDirect(token) {
     ]);
 
     const projects = mapBricksApiProjects(catalog, portfolio);
-    console.log("[BricksCheck] API direct scan =>", projects.length, "projects");
+    log("API direct scan =>", projects.length, "projects");
     return { ok: true, projects };
   } catch (error) {
     const httpStatus = error.httpStatus || 0;
@@ -349,7 +360,7 @@ function mapBricksApiProject(property, ownedBricksByPropertyId) {
     ownedBricks,
     ownedBricksSource: "api",
     status: "Collecte en cours",
-    url: property.id ? `https://app.bricks.co/project/${property.id}` : "https://app.bricks.co/"
+    url: property.id ? `${APP_ORIGIN}/project/${property.id}` : `${APP_ORIGIN}/`
   };
 }
 
@@ -361,9 +372,14 @@ function buildOwnedBricksByPropertyId(portfolio) {
   ];
 
   for (const project of projects) {
-    if (project?.propertyId) {
-      ownedBricksByPropertyId.set(project.propertyId, project.brickCount);
+    if (!project?.propertyId) {
+      continue;
     }
+    const incoming = Number(project.brickCount) || 0;
+    const previous = ownedBricksByPropertyId.get(project.propertyId) || 0;
+    // A property may appear in both `ongoing` and `refunded`; keep the maximum
+    // to avoid overwriting a valid count with 0.
+    ownedBricksByPropertyId.set(project.propertyId, Math.max(previous, incoming));
   }
 
   return ownedBricksByPropertyId;
@@ -381,38 +397,15 @@ function localizeText(value) {
   return "";
 }
 
-function centsToEuros(value) {
-  const cents = Number(value || 0);
-  return Number.isFinite(cents) ? Number((cents / 100).toFixed(2)) : 0;
-}
-
-function normalizeOwnedBricks(value) {
-  if (value === null || value === undefined) {
-    return null;
-  }
-
-  const numericValue = Number(value);
-  return Number.isFinite(numericValue) && numericValue >= 0 ? numericValue : null;
-}
-
-function slugify(value) {
-  return String(value)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-}
-
 async function notifyApiFailure(errorMessage) {
   const notificationId = `bricks-api-error-${Date.now()}`;
 
-  // Ouvrir un onglet Bricks pour rafraîchir la session
-  const existingTabs = await chrome.tabs.query({ url: "https://app.bricks.co/*" });
+  // Open or reload a Bricks tab so the user can refresh the session.
+  const existingTabs = await chrome.tabs.query({ url: `${APP_ORIGIN}/*` });
   if (existingTabs.length > 0) {
     await chrome.tabs.reload(existingTabs[0].id);
   } else {
-    await chrome.tabs.create({ url: "https://app.bricks.co/" });
+    await chrome.tabs.create({ url: `${APP_ORIGIN}/` });
   }
 
   await chrome.notifications.create(notificationId, {
@@ -460,7 +453,7 @@ function shouldNotifyProject(project, options) {
     return true;
   }
 
-  // ownedBricks === null means we couldn't detect the badge (e.g. background tab).
+  // ownedBricks === null means we couldn't detect ownership.
   // Don't notify — better to miss than send a false alarm.
   if (project.ownedBricks === null || project.ownedBricks === undefined) {
     return false;
@@ -488,8 +481,17 @@ function summarizeAvailableProjects(projects) {
 
 async function notifyProjects(matches, options) {
   let createdCount = 0;
+  const seenIds = new Set();
 
   for (const project of matches) {
+    const dedupeKey = project.id || project.name;
+    if (dedupeKey && seenIds.has(dedupeKey)) {
+      continue;
+    }
+    if (dedupeKey) {
+      seenIds.add(dedupeKey);
+    }
+
     const notificationId = `bricks-${Date.now()}-${createdCount}-${project.id || "project"}`;
     const ownedBricks = Math.max(0, Number(project.ownedBricks || 0));
     const availableBricks = Math.max(0, Number(project.availableBricks || 0));
@@ -512,7 +514,6 @@ async function notifyProjects(matches, options) {
     await trackNotification(notificationId);
     await saveNotificationTarget(notificationId, {
       projectName: project.name,
-      tabId: project.tabId,
       url: isProjectUrl(project.url) ? project.url : ""
     });
     createdCount += 1;
@@ -598,50 +599,34 @@ async function deleteNotificationState(notificationId) {
 async function openNotificationProject(notificationId) {
   const { notificationLinks = {} } = await chrome.storage.local.get("notificationLinks");
   const target = normalizeNotificationTarget(notificationLinks[notificationId]);
-  await deleteNotificationState(notificationId);
-  await chrome.notifications.clear(notificationId);
 
-  if (!target) {
-    return;
+  // Open the tab BEFORE clearing state, so a failure to open does not lose the target.
+  let opened = true;
+  if (target?.url) {
+    try {
+      await chrome.tabs.create({ url: target.url });
+    } catch (error) {
+      log("Failed to open project tab", error);
+      opened = false;
+    }
+  } else if (target) {
+    // No specific URL — fall back to the projects listing.
+    try {
+      await chrome.tabs.create({ url: `${APP_ORIGIN}/projects` });
+    } catch (error) {
+      log("Failed to open projects listing", error);
+      opened = false;
+    }
   }
 
-  if (target.url) {
-    await chrome.tabs.create({ url: target.url });
-    return;
+  if (opened) {
+    await deleteNotificationState(notificationId);
+    await chrome.notifications.clear(notificationId);
   }
-
-  await openProjectFromNewBricksTab(target.projectName);
 }
 
 function getClearNotificationAlarmName(notificationId) {
   return `${CLEAR_NOTIFICATION_ALARM_PREFIX}${notificationId}`;
-}
-
-async function openProjectFromNewBricksTab(projectName) {
-  const tab = await chrome.tabs.create({ url: "https://app.bricks.co/projects" });
-  await waitForTabComplete(tab.id);
-  await wait(1500);
-
-  if (!projectName) {
-    return;
-  }
-
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    try {
-      const response = await chrome.tabs.sendMessage(tab.id, {
-        type: "CLICK_BRICKS_PROJECT",
-        projectName
-      });
-
-      if (response?.clicked) {
-        return;
-      }
-    } catch {
-      // The content script may not be ready yet.
-    }
-
-    await wait(1000);
-  }
 }
 
 function normalizeNotificationTarget(rawTarget) {
@@ -652,14 +637,12 @@ function normalizeNotificationTarget(rawTarget) {
   if (typeof rawTarget === "string") {
     return {
       projectName: "",
-      tabId: null,
       url: ""
     };
   }
 
   return {
     projectName: rawTarget.projectName || "",
-    tabId: rawTarget.tabId || null,
     url: isProjectUrl(rawTarget.url) ? sanitizeBricksUrl(rawTarget.url) : ""
   };
 }
@@ -667,25 +650,19 @@ function normalizeNotificationTarget(rawTarget) {
 function sanitizeBricksUrl(url) {
   try {
     const parsed = new URL(url);
-    return parsed.origin === "https://app.bricks.co" ? parsed.href : "https://app.bricks.co/";
+    return parsed.origin === APP_ORIGIN ? parsed.href : `${APP_ORIGIN}/`;
   } catch {
-    return "https://app.bricks.co/";
+    return `${APP_ORIGIN}/`;
   }
 }
 
 function isProjectUrl(url) {
   try {
     const parsed = new URL(url);
-    return parsed.origin === "https://app.bricks.co" && parsed.pathname.startsWith("/project/");
+    return parsed.origin === APP_ORIGIN && parsed.pathname.startsWith("/project/");
   } catch {
     return false;
   }
-}
-
-function formatInteger(value) {
-  return new Intl.NumberFormat("fr-FR", {
-    maximumFractionDigits: 0
-  }).format(Number(value || 0));
 }
 
 async function applyOwnedBricksCache(projects) {
@@ -715,7 +692,7 @@ async function applyOwnedBricksCache(projects) {
       return project;
     }
 
-    console.log("[BricksCheck] Using cached ownedBricks for", project.name, "=>", cached.ownedBricks);
+    log("Using cached ownedBricks for", project.name, "=>", cached.ownedBricks);
     return {
       ...project,
       ownedBricks: cached.ownedBricks,
@@ -732,15 +709,6 @@ async function applyOwnedBricksCache(projects) {
   }
 
   return hydratedProjects;
-}
-
-function hasKnownOwnedBricks(value) {
-  if (value === null || value === undefined) {
-    return false;
-  }
-
-  const numericValue = Number(value);
-  return Number.isFinite(numericValue) && numericValue >= 0;
 }
 
 function dedupeProjects(projects) {
@@ -763,7 +731,7 @@ function dedupeProjects(projects) {
 
 function getProjectDataScore(project) {
   let score = 0;
-  if (project.ownedBricks !== null && project.ownedBricks !== undefined && Number(project.ownedBricks) > 0) {
+  if (hasKnownOwnedBricks(project.ownedBricks) && Number(project.ownedBricks) > 0) {
     score += 3;
   }
   if (Number(project.availableBricks || 0) > 1) {

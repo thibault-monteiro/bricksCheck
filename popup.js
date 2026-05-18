@@ -1,9 +1,5 @@
-const DEFAULT_OPTIONS = {
-  enabled: false,
-  intervalMinutes: 1,
-  ownedThreshold: 100,
-  notifyWhenBelowThreshold: true
-};
+import { DEFAULT_OPTIONS } from "./shared/constants.js";
+import { formatInteger, normalizeOwnedBricks } from "./shared/utils.js";
 
 const elements = {
   enabled: document.querySelector("#enabled"),
@@ -23,6 +19,12 @@ init();
 async function init() {
   elements.enabled.addEventListener("change", toggleMonitoring);
   elements.openOptionsButton.addEventListener("click", openOptions);
+  window.addEventListener("beforeunload", () => {
+    if (countdownTimerId !== null) {
+      clearInterval(countdownTimerId);
+      countdownTimerId = null;
+    }
+  });
 
   await refreshAlarmStatus();
   countdownTimerId = setInterval(renderCountdown, 1000);
@@ -183,19 +185,4 @@ function getAvailableProjects(lastCheck) {
       : [];
 
   return projects.filter((project) => Number(project.availableBricks || 0) > 0);
-}
-
-function normalizeOwnedBricks(value) {
-  if (value === null || value === undefined) {
-    return null;
-  }
-
-  const numericValue = Number(value);
-  return Number.isFinite(numericValue) && numericValue >= 0 ? numericValue : null;
-}
-
-function formatInteger(value) {
-  return new Intl.NumberFormat("fr-FR", {
-    maximumFractionDigits: 0
-  }).format(Number(value || 0));
 }

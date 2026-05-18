@@ -1,9 +1,4 @@
-const DEFAULT_OPTIONS = {
-  enabled: false,
-  intervalMinutes: 1,
-  ownedThreshold: 100,
-  notifyWhenBelowThreshold: true
-};
+import { DEFAULT_OPTIONS } from "./shared/constants.js";
 
 const elements = {
   enabled: document.querySelector("#enabled"),
@@ -36,6 +31,12 @@ async function init() {
   elements.saveButton.addEventListener("click", saveOptions);
   elements.checkNowButton.addEventListener("click", checkNow);
   elements.clearNotificationsButton.addEventListener("click", clearNotifications);
+  window.addEventListener("beforeunload", () => {
+    if (countdownTimerId !== null) {
+      clearInterval(countdownTimerId);
+      countdownTimerId = null;
+    }
+  });
 
   await refreshAlarmStatus();
   countdownTimerId = setInterval(renderCountdown, 1000);
