@@ -24,25 +24,28 @@
     return TOKEN_KEY_HINTS.some((hint) => lowered.includes(hint));
   }
 
-  function readDetectedAuth() {
-    const result = { email: null, token: null };
+  /**
+   * Walks localStorage / sessionStorage looking for a Bricks JWT.
+   * Returns the first JWT-shaped string, or as fallback any 20+ char string
+   * found under a clearly token-named key.
+   */
+  function findToken() {
     const storages = [window.localStorage, window.sessionStorage];
+    let found = null;
 
-    const visit = (value, parentKey) => {
-      if (!value || result.token) {
+    const visit = (value) => {
+      if (found || value == null) {
         return;
       }
 
       if (typeof value === "string") {
         const trimmed = value.trim();
-
         if (isLikelyJwt(trimmed)) {
-          result.token = trimmed;
+          found = trimmed;
           return;
         }
-
         try {
-          visit(JSON.parse(trimmed), parentKey);
+          visit(JSON.parse(trimmed));
         } catch {
           // Not JSON.
         }
@@ -50,38 +53,48 @@
       }
 
       if (Array.isArray(value)) {
-        value.forEach((item) => visit(item, parentKey));
+        for (const item of value) {
+          if (found) return;
+          visit(item);
+        }
         return;
       }
 
       if (typeof value === "object") {
         for (const [key, child] of Object.entries(value)) {
-          if (!result.token && typeof child === "string" && isLikelyJwt(child)) {
-            result.token = child.trim();
-          } else if (!result.token && typeof child === "string" && looksLikeTokenKey(key) && child.trim().length > 20) {
-            // Fallback: opaque token under a token-named key.
-            result.token = child.trim();
+          if (found) return;
+
+          if (typeof child === "string") {
+            const trimmed = child.trim();
+            if (isLikelyJwt(trimmed)) {
+              found = trimmed;
+              return;
+            }
+            if (looksLikeTokenKey(key) && trimmed.length > 20) {
+              // Fallback: opaque token under a token-named key.
+              found = trimmed;
+              return;
+            }
           }
 
-          if (!result.email && typeof child === "string" && child.includes("@") && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(child)) {
-            result.email = child;
-          }
-
-          visit(child, key);
+          visit(child);
+          if (found) return;
         }
       }
     };
 
     for (const storage of storages) {
+      if (found) break;
       for (let index = 0; index < storage.length; index += 1) {
+        if (found) break;
         const key = storage.key(index);
         if (key) {
-          visit(storage.getItem(key), key);
+          visit(storage.getItem(key));
         }
       }
     }
 
-    return result;
+    return found;
   }
 
   // Broadcast the auth token on page load so the extension can cache it.
@@ -92,13 +105,13 @@
 
   const tryBroadcast = () => {
     attempts += 1;
-    const auth = readDetectedAuth();
-    if (auth.token) {
+    const token = findToken();
+    if (token) {
       window.postMessage(
         {
           source: "BRICKS_CHECK_PAGE",
           type: "BRICKS_AUTH_TOKEN",
-          token: auth.token
+          token
         },
         window.location.origin
       );

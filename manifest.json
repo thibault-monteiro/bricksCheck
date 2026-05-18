@@ -2,12 +2,11 @@
   "manifest_version": 3,
   "name": "Bricks Check",
   "description": "Extension Chrome qui surveille les collectes Bricks.co et notifie les projets sous votre seuil de briques.",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "permissions": [
     "alarms",
     "notifications",
-    "storage",
-    "tabs"
+    "storage"
   ],
   "host_permissions": [
     "https://app.bricks.co/*",

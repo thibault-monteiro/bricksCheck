@@ -1,10 +1,14 @@
-// Forward auth token from api_bridge (MAIN world) to service worker
+// Forward auth token from api_bridge (MAIN world) to service worker.
+// Content scripts can't import ES modules, so APP_ORIGIN is duplicated here.
+// Keep in sync with shared/constants.js → APP_ORIGIN and manifest matches.
+const APP_ORIGIN = "https://app.bricks.co";
+
 window.addEventListener("message", (event) => {
   if (event.source !== window) {
     return;
   }
 
-  if (event.origin !== "https://app.bricks.co") {
+  if (event.origin !== APP_ORIGIN) {
     return;
   }
 

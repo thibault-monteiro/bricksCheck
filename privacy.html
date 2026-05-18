@@ -49,7 +49,7 @@
   <body>
     <main>
       <h1>Politique de confidentialite de Bricks Check</h1>
-      <p class="updated">Derniere mise a jour : 17 mai 2026</p>
+      <p class="updated">Derniere mise a jour : 18 mai 2026</p>
 
       <p>
         Bricks Check est une extension Chrome qui surveille la page
@@ -65,23 +65,30 @@
 
       <h2>Donnees traitees</h2>
       <p>
-        L'extension lit uniquement le contenu visible de la page app.bricks.co,
-        notamment les cartes de projets, les noms de projets et les nombres de
-        briques affiches.
+        L'extension recupere les donnees de projets directement depuis l'API
+        publique Bricks (api.bricks.co) en utilisant le jeton d'authentification
+        de la session Chrome de l'utilisateur. Ce jeton est lu uniquement
+        lorsque app.bricks.co est ouverte dans le navigateur, et uniquement
+        depuis le stockage local du site (localStorage / sessionStorage), avec
+        une validation de format JWT.
       </p>
 
       <h2>Utilisation des donnees</h2>
       <p>
-        Ces donnees sont utilisees uniquement pour comparer les projets avec le
+        Les donnees recuperees (noms de projets, briques disponibles, briques
+        possedees) sont utilisees uniquement pour comparer les projets avec le
         seuil defini par l'utilisateur et afficher une notification Chrome
         lorsqu'un projet correspond aux reglages.
       </p>
 
       <h2>Stockage</h2>
       <p>
-        Les reglages de l'utilisateur, comme le seuil, l'intervalle de
-        verification et les options de notification, sont stockes localement
-        dans Chrome via l'API chrome.storage.
+        Les reglages de l'utilisateur (seuil, intervalle de verification,
+        options de notification) sont stockes via chrome.storage.sync. Le jeton
+        d'authentification Bricks et le cache de briques possedees sont stockes
+        localement via chrome.storage.local. Ces stockages ne quittent jamais
+        l'appareil et ne sont pas chiffres : seules les autres extensions ayant
+        la permission storage peuvent theoriquement y acceder.
       </p>
 
       <h2>Partage</h2>

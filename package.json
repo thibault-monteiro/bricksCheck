@@ -1,0 +1,9 @@
+{
+  "name": "bricks-check",
+  "version": "0.5.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/projects.test.js tests/utils.test.js"
+  }
+}

@@ -1,11 +1,11 @@
 import { DEFAULT_OPTIONS, AUTH_TOKEN_KEY, API_ORIGIN, APP_ORIGIN } from "./shared/constants.js";
+import { formatInteger, hasKnownOwnedBricks } from "./shared/utils.js";
 import {
-  slugify,
-  normalizeOwnedBricks,
-  hasKnownOwnedBricks,
-  formatInteger,
-  centsToEuros
-} from "./shared/utils.js";
+  dedupeProjects,
+  isProjectUrl,
+  mapBricksApiProjects,
+  sanitizeBricksUrl
+} from "./shared/projects.js";
 
 const ALARM_NAME = "bricks-check";
 const CLEAR_NOTIFICATION_ALARM_PREFIX = "bricks-clear-notification:";
@@ -98,7 +98,7 @@ let shortIntervalTimerId = null;
 async function syncAlarm() {
   const options = await getOptions();
   await chrome.alarms.clear(ALARM_NAME);
-  clearShortInterval();
+  await clearShortInterval();
 
   if (!options.enabled) {
     return;
@@ -111,7 +111,7 @@ async function syncAlarm() {
     // Note: setTimeout does not survive service worker suspension on MV3.
     // For sub-30s intervals, ticking may pause until the next event wakes the SW.
     const intervalMs = Math.max(5000, intervalMinutes * 60 * 1000);
-    scheduleShortInterval(intervalMs);
+    await scheduleShortInterval(intervalMs);
   } else {
     chrome.alarms.create(ALARM_NAME, {
       delayInMinutes: 0.1,
@@ -120,25 +120,25 @@ async function syncAlarm() {
   }
 }
 
-function scheduleShortInterval(intervalMs) {
-  clearShortInterval();
+async function scheduleShortInterval(intervalMs) {
+  await clearShortInterval();
   const nextCheckAt = Date.now() + intervalMs;
-  chrome.storage.local.set({ nextCheckAt });
+  await chrome.storage.local.set({ nextCheckAt });
   shortIntervalTimerId = setTimeout(async () => {
     await runCheck();
     const options = await getOptions();
     if (options.enabled && Number(options.intervalMinutes) < 0.5) {
-      scheduleShortInterval(intervalMs);
+      await scheduleShortInterval(intervalMs);
     }
   }, intervalMs);
 }
 
-function clearShortInterval() {
+async function clearShortInterval() {
   if (shortIntervalTimerId !== null) {
     clearTimeout(shortIntervalTimerId);
     shortIntervalTimerId = null;
   }
-  chrome.storage.local.remove("nextCheckAt");
+  await chrome.storage.local.remove("nextCheckAt");
 }
 
 async function runCheck() {
@@ -233,7 +233,6 @@ async function scanOpenBricksTabs(retryCount = 0) {
     return applyOwnedBricksCache(dedupeProjects(result.projects));
   }
 
-  // Token may be expired — try to refresh it from a tab (once).
   if ((result.httpStatus === 401 || result.httpStatus === 403) && retryCount < MAX_TOKEN_REFRESH_RETRIES) {
     log("Token expired, refreshing from tab");
     await chrome.storage.local.remove(AUTH_TOKEN_KEY);
@@ -302,105 +301,9 @@ async function fetchBricksJson(apiPath, token) {
   return response.json();
 }
 
-function mapBricksApiProjects(catalog, portfolio) {
-  const ownedBricksByPropertyId = buildOwnedBricksByPropertyId(portfolio);
-  const activeProjects = [
-    ...((catalog?.ongoing?.projects) || []),
-    ...((catalog?.upcoming?.projects) || [])
-  ];
-
-  return activeProjects
-    .map((property) => mapBricksApiProject(property, ownedBricksByPropertyId))
-    .filter(Boolean);
-}
-
-function mapBricksApiProject(property, ownedBricksByPropertyId) {
-  const name = localizeText(property?.name) || "";
-  if (!name) {
-    return null;
-  }
-
-  const listingStatus = property?.listingStatus || "ongoing";
-  if (listingStatus !== "ongoing") {
-    return null;
-  }
-
-  const startedAt = property?.funding?.startedAt ? new Date(property.funding.startedAt) : null;
-  if (startedAt && startedAt.getTime() > Date.now()) {
-    return null;
-  }
-
-  const brickPriceCents = Number(property?.funding?.brickPrice ?? property?.brickPrice ?? 1000);
-  const targetAmountCents = Number(property?.funding?.amountToFundCents ?? 0);
-  const purchasedBrickCount = Number(property?.funding?.purchasedBrickCount ?? 0);
-  const autoInvestPurchasedBrickCount = Number(property?.funding?.autoInvestPurchasedBrickCount ?? 0);
-  const investedAmountCents = (purchasedBrickCount + autoInvestPurchasedBrickCount) * brickPriceCents;
-  const availableAmountCents = Math.max(0, targetAmountCents - investedAmountCents);
-  const brickPrice = centsToEuros(brickPriceCents) || 10;
-  const availableBricks = brickPriceCents > 0 ? Math.floor(availableAmountCents / brickPriceCents) : 0;
-
-  if (availableBricks <= 0 || targetAmountCents <= 0 || property?.hasBricksAvailable === false) {
-    return null;
-  }
-
-  const ownedBricks =
-    normalizeOwnedBricks(property?.ownedBricks) ??
-    normalizeOwnedBricks(property?.investorBricks?.owned) ??
-    normalizeOwnedBricks(ownedBricksByPropertyId.get(property.id)) ??
-    0;
-
-  return {
-    id: property.id || slugify(name),
-    name,
-    availableAmount: centsToEuros(availableAmountCents),
-    availableBricks,
-    brickPrice,
-    investedAmount: centsToEuros(investedAmountCents),
-    targetAmount: centsToEuros(targetAmountCents),
-    ownedBricks,
-    ownedBricksSource: "api",
-    status: "Collecte en cours",
-    url: property.id ? `${APP_ORIGIN}/project/${property.id}` : `${APP_ORIGIN}/`
-  };
-}
-
-function buildOwnedBricksByPropertyId(portfolio) {
-  const ownedBricksByPropertyId = new Map();
-  const projects = [
-    ...((portfolio?.ongoing) || []),
-    ...((portfolio?.refunded) || [])
-  ];
-
-  for (const project of projects) {
-    if (!project?.propertyId) {
-      continue;
-    }
-    const incoming = Number(project.brickCount) || 0;
-    const previous = ownedBricksByPropertyId.get(project.propertyId) || 0;
-    // A property may appear in both `ongoing` and `refunded`; keep the maximum
-    // to avoid overwriting a valid count with 0.
-    ownedBricksByPropertyId.set(project.propertyId, Math.max(previous, incoming));
-  }
-
-  return ownedBricksByPropertyId;
-}
-
-function localizeText(value) {
-  if (typeof value === "string") {
-    return value;
-  }
-
-  if (value && typeof value === "object") {
-    return value.fr || value.en || Object.values(value).find((text) => typeof text === "string") || "";
-  }
-
-  return "";
-}
-
 async function notifyApiFailure(errorMessage) {
-  const notificationId = `bricks-api-error-${Date.now()}`;
+  const notificationId = `bricks-api-error-${generateUniqueId()}`;
 
-  // Open or reload a Bricks tab so the user can refresh the session.
   const existingTabs = await chrome.tabs.query({ url: `${APP_ORIGIN}/*` });
   if (existingTabs.length > 0) {
     await chrome.tabs.reload(existingTabs[0].id);
@@ -443,6 +346,13 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function generateUniqueId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function shouldNotifyProject(project, options) {
   const hasAvailableBricks = Number(project.availableBricks) > 0;
   if (!hasAvailableBricks) {
@@ -453,8 +363,6 @@ function shouldNotifyProject(project, options) {
     return true;
   }
 
-  // ownedBricks === null means we couldn't detect ownership.
-  // Don't notify — better to miss than send a false alarm.
   if (project.ownedBricks === null || project.ownedBricks === undefined) {
     return false;
   }
@@ -492,7 +400,7 @@ async function notifyProjects(matches, options) {
       seenIds.add(dedupeKey);
     }
 
-    const notificationId = `bricks-${Date.now()}-${createdCount}-${project.id || "project"}`;
+    const notificationId = `bricks-${generateUniqueId()}`;
     const ownedBricks = Math.max(0, Number(project.ownedBricks || 0));
     const availableBricks = Math.max(0, Number(project.availableBricks || 0));
     const missingBricks = Math.max(0, Number(options.ownedThreshold) - ownedBricks);
@@ -610,7 +518,6 @@ async function openNotificationProject(notificationId) {
       opened = false;
     }
   } else if (target) {
-    // No specific URL — fall back to the projects listing.
     try {
       await chrome.tabs.create({ url: `${APP_ORIGIN}/projects` });
     } catch (error) {
@@ -645,24 +552,6 @@ function normalizeNotificationTarget(rawTarget) {
     projectName: rawTarget.projectName || "",
     url: isProjectUrl(rawTarget.url) ? sanitizeBricksUrl(rawTarget.url) : ""
   };
-}
-
-function sanitizeBricksUrl(url) {
-  try {
-    const parsed = new URL(url);
-    return parsed.origin === APP_ORIGIN ? parsed.href : `${APP_ORIGIN}/`;
-  } catch {
-    return `${APP_ORIGIN}/`;
-  }
-}
-
-function isProjectUrl(url) {
-  try {
-    const parsed = new URL(url);
-    return parsed.origin === APP_ORIGIN && parsed.pathname.startsWith("/project/");
-  } catch {
-    return false;
-  }
 }
 
 async function applyOwnedBricksCache(projects) {
@@ -709,39 +598,4 @@ async function applyOwnedBricksCache(projects) {
   }
 
   return hydratedProjects;
-}
-
-function dedupeProjects(projects) {
-  const projectByKey = new Map();
-
-  for (const project of projects) {
-    const key = project.id || project.name;
-    if (!key) {
-      continue;
-    }
-
-    const previousProject = projectByKey.get(key);
-    if (!previousProject || getProjectDataScore(project) > getProjectDataScore(previousProject)) {
-      projectByKey.set(key, project);
-    }
-  }
-
-  return [...projectByKey.values()];
-}
-
-function getProjectDataScore(project) {
-  let score = 0;
-  if (hasKnownOwnedBricks(project.ownedBricks) && Number(project.ownedBricks) > 0) {
-    score += 3;
-  }
-  if (Number(project.availableBricks || 0) > 1) {
-    score += 2;
-  }
-  if (Number(project.availableAmount || 0) > 0 && Number(project.targetAmount || 0) > 0) {
-    score += 2;
-  }
-  if (isProjectUrl(project.url)) {
-    score += 1;
-  }
-  return score;
 }
