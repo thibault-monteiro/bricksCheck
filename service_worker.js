@@ -7,6 +7,10 @@ import {
   mapBricksApiProjects,
   sanitizeBricksUrl
 } from "./shared/projects.js";
+import {
+  filterProjectsForNotification,
+  updateNotifiedStates
+} from "./shared/notifications.js";
 
 const ALARM_NAME = "bricks-check";
 const CLEAR_NOTIFICATION_ALARM_PREFIX = "bricks-clear-notification:";
@@ -16,6 +20,7 @@ const OWNED_BRICKS_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const MAX_TOKEN_REFRESH_RETRIES = 1;
 const PENDING_INVEST_INTENT_KEY = "pendingInvestIntent";
 const PENDING_INVEST_INTENT_TTL_MS = 2 * 60 * 1000;
+const NOTIFIED_PROJECT_STATES_KEY = "notifiedProjectStates";
 
 // Toggle to enable console output. Default false in production.
 const DEBUG = false;
@@ -172,18 +177,25 @@ async function handleProjects(projects) {
 
   const matches = projects.filter((project) => shouldNotifyProject(project, options));
   const availableProjects = summarizeAvailableProjects(projects);
-  const shouldNotify = matches.length > 0;
-  let notificationCount = 0;
 
-  if (shouldNotify) {
-    await clearNotifications();
-    notificationCount = await notifyProjects(matches, options);
+  // Don't re-notify on every tick — only for projects we haven't notified
+  // recently (or whose available bricks grew significantly).
+  const { [NOTIFIED_PROJECT_STATES_KEY]: notifiedStates = {} } =
+    await chrome.storage.local.get(NOTIFIED_PROJECT_STATES_KEY);
+  const matchesToNotify = filterProjectsForNotification(matches, notifiedStates);
+
+  let notificationCount = 0;
+  if (matchesToNotify.length > 0) {
+    notificationCount = await notifyProjects(matchesToNotify, options);
+    const updated = updateNotifiedStates(notifiedStates, matchesToNotify);
+    await chrome.storage.local.set({ [NOTIFIED_PROJECT_STATES_KEY]: updated });
   }
 
   const lastCheck = await saveLastCheck({
     checkedAt: Date.now(),
     projectCount: projects.length,
     matches,
+    matchesToNotify,
     availableProjects,
     notificationSent: notificationCount > 0,
     notificationCount

@@ -1,9 +1,9 @@
 {
   "name": "bricks-check",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test tests/projects.test.js tests/utils.test.js"
+    "test": "node --test tests/projects.test.js tests/utils.test.js tests/notifications.test.js"
   }
 }

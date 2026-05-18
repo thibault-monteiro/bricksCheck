@@ -138,6 +138,23 @@ async function runAutoInvest(intent) {
   }
   log("step 5 OK, clicking 'Continuer'", continueButton);
   clickElement(continueButton);
+
+  // Step 6: tick the terms-of-service / acknowledgement checkbox on the
+  // confirmation view. Best-effort — if there isn't one within 5s, we stop
+  // silently. We never click the final "Investir" button, that's on the user.
+  log("step 6: waiting for terms / acknowledgement checkbox");
+  const stepDeadline = Math.min(deadline, Date.now() + 5000);
+  const termsCheckbox = await waitForElement(findTermsCheckbox, { until: stepDeadline });
+  if (!termsCheckbox) {
+    log("step 6: no terms checkbox found within 5s (none needed?)");
+    return;
+  }
+  if (termsCheckbox.checked) {
+    log("step 6: checkbox already checked");
+    return;
+  }
+  log("step 6 OK, ticking checkbox", termsCheckbox);
+  clickElement(termsCheckbox);
 }
 
 // --- DOM helpers -----------------------------------------------------------
@@ -197,6 +214,34 @@ function findInvestModalInput(modal) {
     const type = (input.getAttribute("type") || "text").toLowerCase();
     if (["checkbox", "radio", "submit", "button", "hidden", "file"].includes(type)) continue;
     return input;
+  }
+  return null;
+}
+
+/**
+ * Finds an unchecked checkbox whose surrounding text suggests it is the
+ * terms-of-service / acknowledgement checkbox: keywords like "condition",
+ * "cgv", "accepte", "règles", "lu et", "j'ai pris connaissance".
+ *
+ * We deliberately ignore the "Utiliser mon solde Bricks" toggle: it's
+ * usually already on (checked), and our `cb.checked` filter skips it.
+ */
+function findTermsCheckbox() {
+  const checkboxes = document.querySelectorAll("input[type='checkbox'], [role='checkbox']");
+  const keywords = ["condition", "cgv", "accepte", "règles", "regles", "lu et", "pris connaissance", "j'accepte", "jaccepte"];
+
+  for (const checkbox of checkboxes) {
+    if (!isVisible(checkbox)) continue;
+    if (checkbox.checked || checkbox.getAttribute("aria-checked") === "true") continue;
+
+    let ancestor = checkbox.parentElement;
+    for (let depth = 0; depth < 6 && ancestor; depth += 1) {
+      const text = (ancestor.textContent || "").toLowerCase();
+      if (keywords.some((kw) => text.includes(kw))) {
+        return checkbox;
+      }
+      ancestor = ancestor.parentElement;
+    }
   }
   return null;
 }
