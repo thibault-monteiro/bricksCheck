@@ -8,6 +8,13 @@ const PENDING_INVEST_INTENT_KEY = "pendingInvestIntent";
 const PENDING_INVEST_INTENT_TTL_MS = 2 * 60 * 1000;
 const AUTO_INVEST_FLOW_TIMEOUT_MS = 15000;
 
+// Set to true to log each step of the auto-invest flow to the page console.
+// Useful while the heuristics are stabilising; safe to flip off in prod.
+const DEBUG = true;
+function log(...args) {
+  if (DEBUG) console.log("[BricksCheck]", ...args);
+}
+
 // --- Token relay -----------------------------------------------------------
 
 window.addEventListener("message", (event) => {
@@ -36,13 +43,16 @@ window.addEventListener("message", (event) => {
       return;
     }
     if (!matchesCurrentProject(intent.projectId)) {
+      log("intent does not match current project", intent.projectId, "vs", location.pathname);
       return;
     }
     if (intent.amountEuros <= 0) {
+      log("intent has zero amount, clearing");
       await clearPendingIntent();
       return;
     }
 
+    log("intent matches, starting auto-invest", intent);
     // Consume the intent immediately so we never replay it.
     await clearPendingIntent();
     await runAutoInvest(intent);
@@ -57,6 +67,7 @@ async function readPendingIntent() {
     return null;
   }
   if (Date.now() - Number(intent.createdAt || 0) > PENDING_INVEST_INTENT_TTL_MS) {
+    log("intent expired, clearing");
     await clearPendingIntent();
     return null;
   }
@@ -77,35 +88,55 @@ async function runAutoInvest(intent) {
   const deadline = Date.now() + AUTO_INVEST_FLOW_TIMEOUT_MS;
 
   // Step 1: click "Investir maintenant" (the big page-level button).
+  log("step 1: looking for 'Investir maintenant' button");
   const investNowButton = await waitForElement(findInvestNowButton, { until: deadline });
   if (!investNowButton) {
+    log("step 1 FAILED: button not found");
     return;
   }
+  log("step 1 OK, clicking", investNowButton);
   clickElement(investNowButton);
 
-  // Step 2: wait for the modal's input to appear.
-  const input = await waitForElement(findInvestModalInput, { until: deadline });
-  if (!input) {
+  // Step 2: wait for the modal, then its input.
+  log("step 2: waiting for invest modal");
+  const modal = await waitForElement(findInvestModal, { until: deadline });
+  if (!modal) {
+    log("step 2 FAILED: modal not found");
     return;
   }
+  log("step 2 OK, modal found", modal);
 
-  // Step 3: fill the amount in euros.
-  setReactInputValue(input, String(intent.amountEuros));
+  log("step 3: waiting for amount input inside modal");
+  const input = await waitForElement(() => findInvestModalInput(modal), { until: deadline });
+  if (!input) {
+    log("step 3 FAILED: input not found inside modal");
+    return;
+  }
+  log("step 3 OK, input found", input);
 
-  // Step 4: click "Continuer" in the modal. We give the framework a tick
-  // to re-render and enable the button after the input event.
-  await wait(120);
-  const continueButton = await waitForElement(findContinueButton, { until: deadline });
+  // Step 4: fill the amount in euros.
+  log("step 4: filling input with", intent.amountEuros);
+  const filled = setInputValueRobust(input, String(intent.amountEuros));
+  log("step 4 result: filled=", filled, "current value=", input.value);
+
+  // Step 5: click "Continuer" in the modal. Give the framework a tick to
+  // re-render and enable the button after the input event.
+  await wait(200);
+  log("step 5: looking for 'Continuer' button");
+  const continueButton = await waitForElement(() => findContinueButton(modal), { until: deadline });
   if (!continueButton) {
+    log("step 5 FAILED: button not found");
     return;
   }
   if (continueButton.disabled) {
-    // Try one more tick — React may need an extra microtask.
-    await wait(200);
+    log("step 5: button still disabled, waiting extra 300ms");
+    await wait(300);
     if (continueButton.disabled) {
+      log("step 5 FAILED: button still disabled after wait");
       return;
     }
   }
+  log("step 5 OK, clicking 'Continuer'", continueButton);
   clickElement(continueButton);
 }
 
@@ -121,31 +152,58 @@ function findInvestNowButton() {
   return null;
 }
 
-function findInvestModalInput() {
-  // The modal renders an input with a "€" suffix. We look for a recently-visible
-  // input that is NOT a search/select-like field. Heuristic: visible, type
-  // text/number/empty, near an "€" symbol or accompanying chip buttons (100€).
-  const inputs = document.querySelectorAll("input");
+/**
+ * Returns the visible Bricks invest dialog, identified by:
+ *   - role=dialog / aria-modal=true, OR
+ *   - fallback: a smallish element containing both "Investir" and "Continuer".
+ */
+function findInvestModal() {
+  const dialogs = document.querySelectorAll("[role='dialog'], dialog, [aria-modal='true']");
+  for (const dialog of dialogs) {
+    if (!isVisible(dialog)) continue;
+    const text = (dialog.textContent || "").toLowerCase();
+    if (text.includes("investir") && text.includes("continuer")) {
+      return dialog;
+    }
+  }
+
+  // Fallback: any visible element under 1000 chars containing both labels.
+  const all = document.querySelectorAll("body *");
+  let best = null;
+  let bestLen = Infinity;
+  for (const el of all) {
+    if (!isVisible(el)) continue;
+    const text = (el.textContent || "");
+    const lower = text.toLowerCase();
+    if (!lower.includes("investir") || !lower.includes("continuer")) continue;
+    if (text.length < bestLen && text.length < 1000) {
+      best = el;
+      bestLen = text.length;
+    }
+  }
+  return best;
+}
+
+/**
+ * Within an invest modal, returns the primary amount input — the first
+ * visible non-checkbox/radio/hidden input. The "Utiliser mon solde Bricks"
+ * toggle is a checkbox, so it's skipped naturally.
+ */
+function findInvestModalInput(modal) {
+  if (!modal) return null;
+  const inputs = modal.querySelectorAll("input");
   for (const input of inputs) {
     if (!isVisible(input)) continue;
     const type = (input.getAttribute("type") || "text").toLowerCase();
-    if (!["text", "number", "tel", ""].includes(type)) continue;
-
-    // Confirm context by walking up a few levels looking for the modal hints.
-    let ancestor = input.parentElement;
-    for (let depth = 0; depth < 6 && ancestor; depth += 1) {
-      const text = (ancestor.textContent || "").toLowerCase();
-      if (text.includes("continuer") && (text.includes("€") || text.includes("brick"))) {
-        return input;
-      }
-      ancestor = ancestor.parentElement;
-    }
+    if (["checkbox", "radio", "submit", "button", "hidden", "file"].includes(type)) continue;
+    return input;
   }
   return null;
 }
 
-function findContinueButton() {
-  const buttons = document.querySelectorAll("button, [role='button']");
+function findContinueButton(modal) {
+  const root = modal || document;
+  const buttons = root.querySelectorAll("button, [role='button']");
   for (const button of buttons) {
     if (!isVisible(button)) continue;
     const text = normalizedText(button);
@@ -172,25 +230,70 @@ function isVisible(element) {
 }
 
 function clickElement(element) {
-  element.scrollIntoView({ block: "center", inline: "center" });
+  try {
+    element.scrollIntoView({ block: "center", inline: "center" });
+  } catch {
+    // ignore
+  }
   element.click();
 }
 
 /**
- * Sets the value of a React-controlled input the way React expects (via the
- * native setter on the prototype) and dispatches an `input` event so the
- * framework picks up the change.
+ * Sets an input value the way modern frameworks expect:
+ *   1. focus the input and select any existing value,
+ *   2. use the native HTMLInputElement.value setter so React's internal
+ *      _valueTracker sees the change,
+ *   3. dispatch input + change events,
+ *   4. if the value did NOT stick (some libs intercept the setter), fall
+ *      back to selecting all and execCommand("insertText", ...) which
+ *      simulates a real keystroke at the document level.
+ *
+ * Returns true if `input.value` ends up matching `value`.
  */
-function setReactInputValue(input, value) {
-  const proto = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-  const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
-  if (descriptor && descriptor.set) {
-    descriptor.set.call(input, value);
-  } else {
-    input.value = value;
+function setInputValueRobust(input, value) {
+  try {
+    input.focus();
+  } catch {
+    // ignore
   }
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-  input.dispatchEvent(new Event("change", { bubbles: true }));
+
+  // 1. Try the native setter.
+  try {
+    const proto = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+    if (descriptor && descriptor.set) {
+      descriptor.set.call(input, value);
+    } else {
+      input.value = value;
+    }
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  } catch (error) {
+    log("native setter failed:", error?.message || error);
+  }
+
+  if (input.value === value) {
+    return true;
+  }
+
+  // 2. Fallback: select all + execCommand insertText. Works around masked
+  // currency inputs that ignore the prototype setter.
+  try {
+    input.focus();
+    if (typeof input.setSelectionRange === "function") {
+      input.setSelectionRange(0, input.value.length);
+    } else {
+      input.select?.();
+    }
+    const ok = document.execCommand && document.execCommand("insertText", false, value);
+    log("execCommand insertText returned", ok, "value now=", input.value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  } catch (error) {
+    log("execCommand fallback failed:", error?.message || error);
+  }
+
+  return input.value === value;
 }
 
 function wait(ms) {
