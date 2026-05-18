@@ -147,14 +147,34 @@ async function runAutoInvest(intent) {
   const termsCheckbox = await waitForElement(findTermsCheckbox, { until: stepDeadline });
   if (!termsCheckbox) {
     log("step 6: no terms checkbox found within 5s (none needed?)");
+    dumpCheckboxCandidates();
     return;
   }
-  if (termsCheckbox.checked) {
+  if (isChecked(termsCheckbox)) {
     log("step 6: checkbox already checked");
     return;
   }
   log("step 6 OK, ticking checkbox", termsCheckbox);
-  tickCheckbox(termsCheckbox);
+  const ok = tickCheckbox(termsCheckbox);
+  log("step 6 result: isChecked=", isChecked(termsCheckbox), "tickCheckbox returned=", ok);
+}
+
+/**
+ * Logs every element in the DOM that looks remotely like a checkbox so
+ * we can see, in the real Bricks page, what wrapper they actually use.
+ * Helps debug "no terms checkbox found" without round-tripping with the
+ * user every time.
+ */
+function dumpCheckboxCandidates() {
+  const candidates = document.querySelectorAll(
+    "input[type='checkbox'], [role='checkbox'], [aria-checked], [data-state='checked'], [data-state='unchecked']"
+  );
+  log("DEBUG: checkbox-like candidates in DOM:", candidates.length);
+  candidates.forEach((el, i) => {
+    const row = el.closest("[role='dialog'], section, form, div");
+    const snippet = (row?.textContent || "").replace(/\s+/g, " ").slice(0, 120);
+    log(`  [${i}] tag=${el.tagName} role=${el.getAttribute("role")} aria-checked=${el.getAttribute("aria-checked")} data-state=${el.getAttribute("data-state")} visible=${isVisible(el)} nearbyText="${snippet}"`, el);
+  });
 }
 
 // --- DOM helpers -----------------------------------------------------------
@@ -218,33 +238,54 @@ function findInvestModalInput(modal) {
   return null;
 }
 
+// Keywords identifying the terms / acknowledgement row.
+const TERMS_KEYWORDS = [
+  "en cochant", "condition", "cgv", "accepte", "règles", "regles",
+  "lu et", "pris connaissance", "j'accepte", "jaccepte"
+];
+
+/**
+ * True if an element looks checked, across the various conventions used
+ * by React Native Web, Radix, and plain HTML inputs.
+ */
+function isChecked(el) {
+  if (!el) return false;
+  if (el.checked === true) return true;
+  const aria = el.getAttribute && el.getAttribute("aria-checked");
+  if (aria === "true") return true;
+  const dataState = el.getAttribute && el.getAttribute("data-state");
+  if (dataState === "checked") return true;
+  return false;
+}
+
 /**
  * Finds an unchecked checkbox whose surrounding text suggests it is the
- * terms-of-service / acknowledgement checkbox: keywords like "condition",
- * "cgv", "accepte", "règles", "lu et", "j'ai pris connaissance".
+ * terms-of-service / acknowledgement checkbox.
  *
- * The real <input> is often visually hidden (opacity 0, off-screen) in
- * styled React checkboxes, so we do NOT require the input itself to be
- * visible — we require a visible ancestor with the right wording.
+ * Bricks runs on React Native Web + Radix, so the "checkbox" may be:
+ *   - <input type="checkbox"> (rare here, often hidden)
+ *   - element with role="checkbox" (Radix Checkbox button)
+ *   - element with aria-checked or data-state="unchecked" (RN Web View
+ *     with accessibilityRole="checkbox", custom widgets)
  *
- * We deliberately ignore the "Utiliser mon solde Bricks" toggle: it's
- * usually already on (checked), and our `cb.checked` filter skips it.
+ * We do NOT require the element itself to be visible — styled checkboxes
+ * often hide the interactive node and route clicks through a wrapper.
  */
 function findTermsCheckbox() {
-  const checkboxes = document.querySelectorAll("input[type='checkbox'], [role='checkbox']");
-  const keywords = ["condition", "cgv", "accepte", "règles", "regles", "lu et", "pris connaissance", "j'accepte", "jaccepte", "en cochant"];
+  const selector = "input[type='checkbox'], [role='checkbox'], [aria-checked], [data-state='unchecked'], [data-state='checked']";
+  const candidates = document.querySelectorAll(selector);
 
-  for (const checkbox of checkboxes) {
-    if (checkbox.checked || checkbox.getAttribute("aria-checked") === "true") continue;
+  for (const checkbox of candidates) {
+    if (isChecked(checkbox)) continue;
 
     let ancestor = checkbox.parentElement;
     let hasVisibleAncestor = false;
-    for (let depth = 0; depth < 6 && ancestor; depth += 1) {
+    for (let depth = 0; depth < 8 && ancestor; depth += 1) {
       if (!hasVisibleAncestor && isVisible(ancestor)) {
         hasVisibleAncestor = true;
       }
       const text = (ancestor.textContent || "").toLowerCase();
-      if (hasVisibleAncestor && keywords.some((kw) => text.includes(kw))) {
+      if (hasVisibleAncestor && TERMS_KEYWORDS.some((kw) => text.includes(kw))) {
         return checkbox;
       }
       ancestor = ancestor.parentElement;
@@ -254,70 +295,71 @@ function findTermsCheckbox() {
 }
 
 /**
- * Ticks a checkbox the way a real user would. Bricks (like many React
- * apps) hides the real <input> and renders a styled wrapper that owns
- * the click handler, so calling `.click()` on the input is a no-op.
+ * Ticks a checkbox the way a real user would. Bricks renders checkboxes
+ * via React Native Web / Radix, so the interactive node is often a
+ * <button role="checkbox"> or <div aria-checked> — calling `.click()`
+ * on a hidden underlying <input> is a no-op.
  *
- * Strategy, in order:
- *   1. click the closest visible <label> (browsers route this to the input)
- *   2. click the closest visible ancestor that looks like the styled box
- *   3. native setter on `.checked` + dispatch input/change (last-resort
- *      for fully-controlled inputs)
- *
- * After each strategy we check `checkbox.checked` and stop early.
+ * Strategy, in order, stopping as soon as `isChecked` becomes true:
+ *   1. click the associated <label>
+ *   2. click the element directly (works for role=checkbox button)
+ *   3. click the closest visible ancestor (the styled wrapper / row)
+ *   4. for real <input>, force `.checked` via the native setter
  */
 function tickCheckbox(checkbox) {
-  if (checkbox.checked) return true;
+  if (isChecked(checkbox)) return true;
 
-  // 1. Click the associated label. label[for=id] OR label as ancestor.
+  // 1. Associated label.
   const id = checkbox.id;
   let label = null;
   if (id) {
     label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
   }
-  if (!label) {
+  if (!label && typeof checkbox.closest === "function") {
     label = checkbox.closest("label");
   }
   if (label && isVisible(label)) {
     log("tickCheckbox: clicking label", label);
     clickElement(label);
-    if (checkbox.checked) return true;
+    if (isChecked(checkbox)) return true;
   }
 
-  // 2. Click the nearest visible ancestor (usually the styled wrapper).
+  // 2. Direct click — works for role=checkbox, aria-checked widgets.
+  log("tickCheckbox: clicking element directly", checkbox);
+  clickElement(checkbox);
+  if (isChecked(checkbox)) return true;
+
+  // 3. Visible ancestor / row wrapper.
   let ancestor = checkbox.parentElement;
-  for (let depth = 0; depth < 4 && ancestor; depth += 1) {
+  for (let depth = 0; depth < 5 && ancestor; depth += 1) {
     if (isVisible(ancestor) && ancestor !== label) {
       log("tickCheckbox: clicking visible ancestor", ancestor);
       clickElement(ancestor);
-      if (checkbox.checked) return true;
+      if (isChecked(checkbox)) return true;
       break;
     }
     ancestor = ancestor.parentElement;
   }
 
-  // 3. Direct click on the input itself (works if it's actually visible).
-  log("tickCheckbox: clicking input directly", checkbox);
-  clickElement(checkbox);
-  if (checkbox.checked) return true;
-
-  // 4. Last resort: force `.checked = true` via the native setter so
+  // 4. Real <input>: force `.checked = true` via the native setter so
   // React's _valueTracker picks up the change, then fire change.
-  try {
-    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked");
-    if (descriptor && descriptor.set) {
-      descriptor.set.call(checkbox, true);
-    } else {
-      checkbox.checked = true;
+  if (checkbox instanceof HTMLInputElement) {
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked");
+      if (descriptor && descriptor.set) {
+        descriptor.set.call(checkbox, true);
+      } else {
+        checkbox.checked = true;
+      }
+      checkbox.dispatchEvent(new Event("input", { bubbles: true }));
+      checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+      log("tickCheckbox: forced .checked via native setter, checked=", checkbox.checked);
+    } catch (error) {
+      log("tickCheckbox: native setter failed:", error?.message || error);
     }
-    checkbox.dispatchEvent(new Event("input", { bubbles: true }));
-    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
-    log("tickCheckbox: forced .checked via native setter, checked=", checkbox.checked);
-  } catch (error) {
-    log("tickCheckbox: native setter failed:", error?.message || error);
   }
 
-  return checkbox.checked;
+  return isChecked(checkbox);
 }
 
 function findContinueButton(modal) {
