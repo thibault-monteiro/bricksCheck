@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  bricksToInvestEuros,
   buildOwnedBricksByPropertyId,
   dedupeProjects,
   getProjectDataScore,
@@ -193,6 +194,33 @@ describe("mapBricksApiProjects", () => {
     assert.deepEqual(mapBricksApiProjects(null, null), []);
     assert.deepEqual(mapBricksApiProjects({}, null), []);
     assert.deepEqual(mapBricksApiProjects({ ongoing: {} }, null), []);
+  });
+});
+
+describe("bricksToInvestEuros", () => {
+  it("multiplies bricks by default 10 EUR price", () => {
+    assert.equal(bricksToInvestEuros(5), 50);
+    assert.equal(bricksToInvestEuros(100), 1000);
+  });
+
+  it("uses the provided brickPrice", () => {
+    assert.equal(bricksToInvestEuros(3, 20), 60);
+  });
+
+  it("rounds to integer euros", () => {
+    assert.equal(bricksToInvestEuros(2, 10.5), 21);
+    assert.equal(bricksToInvestEuros(3, 10.4), 31); // 31.2 -> 31
+  });
+
+  it("returns 0 for zero or negative bricks", () => {
+    assert.equal(bricksToInvestEuros(0), 0);
+    assert.equal(bricksToInvestEuros(-5), 0);
+  });
+
+  it("falls back to 10 EUR when brickPrice is invalid", () => {
+    assert.equal(bricksToInvestEuros(5, 0), 50);
+    assert.equal(bricksToInvestEuros(5, -1), 50);
+    assert.equal(bricksToInvestEuros(5, NaN), 50);
   });
 });
 

@@ -165,6 +165,22 @@ export function mapBricksApiProjects(catalog, portfolio) {
 }
 
 /**
+ * Computes the euro amount to put in the Bricks invest modal given a
+ * project's brick price (euros per brick) and a number of bricks.
+ * The Bricks invest input is in euros, not bricks.
+ *
+ * @param {number} bricks
+ * @param {number} brickPriceEuros default 10
+ * @returns {number} integer euros, clamped to >= 0.
+ */
+export function bricksToInvestEuros(bricks, brickPriceEuros = 10) {
+  const numBricks = Number(bricks) || 0;
+  const numPrice = Number(brickPriceEuros) > 0 ? Number(brickPriceEuros) : 10;
+  if (numBricks <= 0) return 0;
+  return Math.round(numBricks * numPrice);
+}
+
+/**
  * @param {BricksProject} project
  * @returns {number} higher score = richer data; used to pick the best duplicate.
  */

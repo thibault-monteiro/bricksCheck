@@ -1,6 +1,7 @@
 import { DEFAULT_OPTIONS, AUTH_TOKEN_KEY, API_ORIGIN, APP_ORIGIN } from "./shared/constants.js";
 import { formatInteger, hasKnownOwnedBricks } from "./shared/utils.js";
 import {
+  bricksToInvestEuros,
   dedupeProjects,
   isProjectUrl,
   mapBricksApiProjects,
@@ -13,6 +14,8 @@ const NOTIFICATION_TTL_MINUTES = 0.5;
 const OWNED_BRICKS_CACHE_KEY = "ownedBricksByProject";
 const OWNED_BRICKS_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const MAX_TOKEN_REFRESH_RETRIES = 1;
+const PENDING_INVEST_INTENT_KEY = "pendingInvestIntent";
+const PENDING_INVEST_INTENT_TTL_MS = 2 * 60 * 1000;
 
 // Toggle to enable console output. Default false in production.
 const DEBUG = false;
@@ -422,7 +425,10 @@ async function notifyProjects(matches, options) {
     await trackNotification(notificationId);
     await saveNotificationTarget(notificationId, {
       projectName: project.name,
-      url: isProjectUrl(project.url) ? project.url : ""
+      projectId: project.id || "",
+      url: isProjectUrl(project.url) ? project.url : "",
+      bricksToInvest: buyableBricks,
+      brickPrice: Number(project.brickPrice) || 10
     });
     createdCount += 1;
   }
@@ -508,6 +514,21 @@ async function openNotificationProject(notificationId) {
   const { notificationLinks = {} } = await chrome.storage.local.get("notificationLinks");
   const target = normalizeNotificationTarget(notificationLinks[notificationId]);
 
+  // Record an auto-invest intent if we have a target with a positive brick count.
+  // The content script will pick it up when the project page loads.
+  if (target?.projectId && target.bricksToInvest > 0) {
+    await chrome.storage.local.set({
+      [PENDING_INVEST_INTENT_KEY]: {
+        projectId: target.projectId,
+        bricksToInvest: target.bricksToInvest,
+        brickPrice: target.brickPrice,
+        amountEuros: bricksToInvestEuros(target.bricksToInvest, target.brickPrice),
+        createdAt: Date.now()
+      }
+    });
+    log("Stored invest intent", target.projectId, target.bricksToInvest, "bricks");
+  }
+
   // Open the tab BEFORE clearing state, so a failure to open does not lose the target.
   let opened = true;
   if (target?.url) {
@@ -544,13 +565,19 @@ function normalizeNotificationTarget(rawTarget) {
   if (typeof rawTarget === "string") {
     return {
       projectName: "",
-      url: ""
+      projectId: "",
+      url: "",
+      bricksToInvest: 0,
+      brickPrice: 10
     };
   }
 
   return {
     projectName: rawTarget.projectName || "",
-    url: isProjectUrl(rawTarget.url) ? sanitizeBricksUrl(rawTarget.url) : ""
+    projectId: rawTarget.projectId || "",
+    url: isProjectUrl(rawTarget.url) ? sanitizeBricksUrl(rawTarget.url) : "",
+    bricksToInvest: Math.max(0, Number(rawTarget.bricksToInvest) || 0),
+    brickPrice: Number(rawTarget.brickPrice) > 0 ? Number(rawTarget.brickPrice) : 10
   };
 }
 
