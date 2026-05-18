@@ -7,10 +7,6 @@ import {
   mapBricksApiProjects,
   sanitizeBricksUrl
 } from "./shared/projects.js";
-import {
-  filterProjectsForNotification,
-  updateNotifiedStates
-} from "./shared/notifications.js";
 
 const ALARM_NAME = "bricks-check";
 const CLEAR_NOTIFICATION_ALARM_PREFIX = "bricks-clear-notification:";
@@ -20,7 +16,6 @@ const OWNED_BRICKS_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const MAX_TOKEN_REFRESH_RETRIES = 1;
 const PENDING_INVEST_INTENT_KEY = "pendingInvestIntent";
 const PENDING_INVEST_INTENT_TTL_MS = 2 * 60 * 1000;
-const NOTIFIED_PROJECT_STATES_KEY = "notifiedProjectStates";
 
 // Toggle to enable console output. Default false in production.
 const DEBUG = false;
@@ -149,7 +144,28 @@ async function clearShortInterval() {
   await chrome.storage.local.remove("nextCheckAt");
 }
 
-async function runCheck() {
+// Guard against overlapping runCheck calls (e.g., a short alarm firing while
+// the previous check is still awaiting the Bricks API). If a runCheck is
+// in flight, the second caller gets the same promise back instead of
+// triggering a parallel scan and double notifications.
+let runCheckInFlight = null;
+
+function runCheck() {
+  if (runCheckInFlight) {
+    log("runCheck already in flight, reusing pending promise");
+    return runCheckInFlight;
+  }
+  runCheckInFlight = (async () => {
+    try {
+      return await runCheckInner();
+    } finally {
+      runCheckInFlight = null;
+    }
+  })();
+  return runCheckInFlight;
+}
+
+async function runCheckInner() {
   const options = await getOptions();
   if (!options.enabled) {
     return saveLastCheck({ checkedAt: Date.now(), matches: [], availableProjects: [], skipped: true });
@@ -177,25 +193,20 @@ async function handleProjects(projects) {
 
   const matches = projects.filter((project) => shouldNotifyProject(project, options));
   const availableProjects = summarizeAvailableProjects(projects);
-
-  // Don't re-notify on every tick — only for projects we haven't notified
-  // recently (or whose available bricks grew significantly).
-  const { [NOTIFIED_PROJECT_STATES_KEY]: notifiedStates = {} } =
-    await chrome.storage.local.get(NOTIFIED_PROJECT_STATES_KEY);
-  const matchesToNotify = filterProjectsForNotification(matches, notifiedStates);
-
   let notificationCount = 0;
-  if (matchesToNotify.length > 0) {
-    notificationCount = await notifyProjects(matchesToNotify, options);
-    const updated = updateNotifiedStates(notifiedStates, matchesToNotify);
-    await chrome.storage.local.set({ [NOTIFIED_PROJECT_STATES_KEY]: updated });
+
+  // Notify on every tick that finds matches — bricks come and go fast on
+  // Bricks.co, so re-notifying is desired behavior. We clear old notifs
+  // first so the OS shows the new banner instead of stacking silently.
+  if (matches.length > 0) {
+    await clearNotifications();
+    notificationCount = await notifyProjects(matches, options);
   }
 
   const lastCheck = await saveLastCheck({
     checkedAt: Date.now(),
     projectCount: projects.length,
     matches,
-    matchesToNotify,
     availableProjects,
     notificationSent: notificationCount > 0,
     notificationCount
