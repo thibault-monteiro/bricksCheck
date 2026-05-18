@@ -154,7 +154,7 @@ async function runAutoInvest(intent) {
     return;
   }
   log("step 6 OK, ticking checkbox", termsCheckbox);
-  clickElement(termsCheckbox);
+  tickCheckbox(termsCheckbox);
 }
 
 // --- DOM helpers -----------------------------------------------------------
@@ -223,27 +223,101 @@ function findInvestModalInput(modal) {
  * terms-of-service / acknowledgement checkbox: keywords like "condition",
  * "cgv", "accepte", "règles", "lu et", "j'ai pris connaissance".
  *
+ * The real <input> is often visually hidden (opacity 0, off-screen) in
+ * styled React checkboxes, so we do NOT require the input itself to be
+ * visible — we require a visible ancestor with the right wording.
+ *
  * We deliberately ignore the "Utiliser mon solde Bricks" toggle: it's
  * usually already on (checked), and our `cb.checked` filter skips it.
  */
 function findTermsCheckbox() {
   const checkboxes = document.querySelectorAll("input[type='checkbox'], [role='checkbox']");
-  const keywords = ["condition", "cgv", "accepte", "règles", "regles", "lu et", "pris connaissance", "j'accepte", "jaccepte"];
+  const keywords = ["condition", "cgv", "accepte", "règles", "regles", "lu et", "pris connaissance", "j'accepte", "jaccepte", "en cochant"];
 
   for (const checkbox of checkboxes) {
-    if (!isVisible(checkbox)) continue;
     if (checkbox.checked || checkbox.getAttribute("aria-checked") === "true") continue;
 
     let ancestor = checkbox.parentElement;
+    let hasVisibleAncestor = false;
     for (let depth = 0; depth < 6 && ancestor; depth += 1) {
+      if (!hasVisibleAncestor && isVisible(ancestor)) {
+        hasVisibleAncestor = true;
+      }
       const text = (ancestor.textContent || "").toLowerCase();
-      if (keywords.some((kw) => text.includes(kw))) {
+      if (hasVisibleAncestor && keywords.some((kw) => text.includes(kw))) {
         return checkbox;
       }
       ancestor = ancestor.parentElement;
     }
   }
   return null;
+}
+
+/**
+ * Ticks a checkbox the way a real user would. Bricks (like many React
+ * apps) hides the real <input> and renders a styled wrapper that owns
+ * the click handler, so calling `.click()` on the input is a no-op.
+ *
+ * Strategy, in order:
+ *   1. click the closest visible <label> (browsers route this to the input)
+ *   2. click the closest visible ancestor that looks like the styled box
+ *   3. native setter on `.checked` + dispatch input/change (last-resort
+ *      for fully-controlled inputs)
+ *
+ * After each strategy we check `checkbox.checked` and stop early.
+ */
+function tickCheckbox(checkbox) {
+  if (checkbox.checked) return true;
+
+  // 1. Click the associated label. label[for=id] OR label as ancestor.
+  const id = checkbox.id;
+  let label = null;
+  if (id) {
+    label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+  }
+  if (!label) {
+    label = checkbox.closest("label");
+  }
+  if (label && isVisible(label)) {
+    log("tickCheckbox: clicking label", label);
+    clickElement(label);
+    if (checkbox.checked) return true;
+  }
+
+  // 2. Click the nearest visible ancestor (usually the styled wrapper).
+  let ancestor = checkbox.parentElement;
+  for (let depth = 0; depth < 4 && ancestor; depth += 1) {
+    if (isVisible(ancestor) && ancestor !== label) {
+      log("tickCheckbox: clicking visible ancestor", ancestor);
+      clickElement(ancestor);
+      if (checkbox.checked) return true;
+      break;
+    }
+    ancestor = ancestor.parentElement;
+  }
+
+  // 3. Direct click on the input itself (works if it's actually visible).
+  log("tickCheckbox: clicking input directly", checkbox);
+  clickElement(checkbox);
+  if (checkbox.checked) return true;
+
+  // 4. Last resort: force `.checked = true` via the native setter so
+  // React's _valueTracker picks up the change, then fire change.
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked");
+    if (descriptor && descriptor.set) {
+      descriptor.set.call(checkbox, true);
+    } else {
+      checkbox.checked = true;
+    }
+    checkbox.dispatchEvent(new Event("input", { bubbles: true }));
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    log("tickCheckbox: forced .checked via native setter, checked=", checkbox.checked);
+  } catch (error) {
+    log("tickCheckbox: native setter failed:", error?.message || error);
+  }
+
+  return checkbox.checked;
 }
 
 function findContinueButton(modal) {
