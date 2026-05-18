@@ -10,7 +10,7 @@ const AUTO_INVEST_FLOW_TIMEOUT_MS = 15000;
 
 // Set to true to log each step of the auto-invest flow to the page console.
 // Useful while the heuristics are stabilising; safe to flip off in prod.
-const DEBUG = true;
+const DEBUG = false;
 function log(...args) {
   if (DEBUG) console.log("[BricksCheck]", ...args);
 }
