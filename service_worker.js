@@ -14,7 +14,7 @@ const NOTIFICATION_TTL_MINUTES = 0.5;
 const OWNED_BRICKS_CACHE_KEY = "ownedBricksByProject";
 const OWNED_BRICKS_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const MAX_TOKEN_REFRESH_RETRIES = 1;
-const PENDING_INVEST_INTENT_KEY = "pendingInvestIntent";
+const PENDING_INVEST_INTENTS_KEY = "pendingInvestIntents";
 const PENDING_INVEST_INTENT_TTL_MS = 2 * 60 * 1000;
 const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
 const PLAY_SOUND_MESSAGE_TYPE = "BRICKS_PLAY_SOUND";
@@ -587,20 +587,30 @@ async function openNotificationProject(notificationId, { autopilot = false } = {
   const target = normalizeNotificationTarget(notificationLinks[notificationId]);
 
   // Record an auto-invest intent if we have a target with a positive brick count.
-  // The content script will pick it up when the project page loads. When
-  // `autopilot` is true the content script also clicks the final "Investir X €"
-  // button, so the buy happens entirely without user input.
+  // The content script picks it up by projectId when the project page loads.
+  // Intents are keyed by projectId (not a single slot) so an autopilot cycle
+  // that matches several projects at once queues a buy for each instead of
+  // clobbering all but the last. When `autopilot` is true the content script
+  // also clicks the final "Investir X €" button, so the buy happens entirely
+  // without user input.
   if (target?.projectId && target.bricksToInvest > 0) {
-    await chrome.storage.local.set({
-      [PENDING_INVEST_INTENT_KEY]: {
-        projectId: target.projectId,
-        bricksToInvest: target.bricksToInvest,
-        brickPrice: target.brickPrice,
-        amountEuros: bricksToInvestEuros(target.bricksToInvest, target.brickPrice),
-        autopilot,
-        createdAt: Date.now()
+    const now = Date.now();
+    const { [PENDING_INVEST_INTENTS_KEY]: existing = {} } = await chrome.storage.local.get(PENDING_INVEST_INTENTS_KEY);
+    const intents = {};
+    for (const [pid, intent] of Object.entries(existing || {})) {
+      if (now - Number(intent?.createdAt || 0) <= PENDING_INVEST_INTENT_TTL_MS) {
+        intents[pid] = intent;
       }
-    });
+    }
+    intents[target.projectId] = {
+      projectId: target.projectId,
+      bricksToInvest: target.bricksToInvest,
+      brickPrice: target.brickPrice,
+      amountEuros: bricksToInvestEuros(target.bricksToInvest, target.brickPrice),
+      autopilot,
+      createdAt: now
+    };
+    await chrome.storage.local.set({ [PENDING_INVEST_INTENTS_KEY]: intents });
     log("Stored invest intent", target.projectId, target.bricksToInvest, "bricks", { autopilot });
   }
 

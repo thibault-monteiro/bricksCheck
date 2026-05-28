@@ -1,10 +1,10 @@
 // Forward auth token from api_bridge (MAIN world) to service worker AND
-// execute auto-invest flow when a pendingInvestIntent matches the current page.
+// execute auto-invest flow when a pending invest intent matches the current page.
 //
 // Content scripts can't import ES modules, so APP_ORIGIN is duplicated here.
 // Keep in sync with shared/constants.js → APP_ORIGIN and manifest matches.
 const APP_ORIGIN = "https://app.bricks.co";
-const PENDING_INVEST_INTENT_KEY = "pendingInvestIntent";
+const PENDING_INVEST_INTENTS_KEY = "pendingInvestIntents";
 const PENDING_INVEST_INTENT_TTL_MS = 2 * 60 * 1000;
 const AUTO_INVEST_FLOW_TIMEOUT_MS = 15000;
 
@@ -38,50 +38,59 @@ window.addEventListener("message", (event) => {
 
 (async () => {
   try {
-    const intent = await readPendingIntent();
-    if (!intent) {
+    const projectId = currentProjectId();
+    if (!projectId) {
       return;
     }
-    if (!matchesCurrentProject(intent.projectId)) {
-      log("intent does not match current project", intent.projectId, "vs", location.pathname);
+    const intent = await readPendingIntent(projectId);
+    if (!intent) {
       return;
     }
     if (intent.amountEuros <= 0) {
       log("intent has zero amount, clearing");
-      await clearPendingIntent();
+      await clearPendingIntent(projectId);
       return;
     }
 
     log("intent matches, starting auto-invest", intent);
     // Consume the intent immediately so we never replay it.
-    await clearPendingIntent();
+    await clearPendingIntent(projectId);
     await runAutoInvest(intent);
   } catch (error) {
     console.warn("[BricksCheck] auto-invest failed:", error?.message || error);
   }
 })();
 
-async function readPendingIntent() {
-  const { [PENDING_INVEST_INTENT_KEY]: intent } = await chrome.storage.local.get(PENDING_INVEST_INTENT_KEY);
+function currentProjectId() {
+  const match = location.pathname.match(/^\/project\/([^/]+)/);
+  return match ? match[1] : null;
+}
+
+async function readPendingIntent(projectId) {
+  const { [PENDING_INVEST_INTENTS_KEY]: intents = {} } = await chrome.storage.local.get(PENDING_INVEST_INTENTS_KEY);
+  const intent = intents && typeof intents === "object" ? intents[projectId] : null;
   if (!intent || typeof intent !== "object") {
     return null;
   }
   if (Date.now() - Number(intent.createdAt || 0) > PENDING_INVEST_INTENT_TTL_MS) {
     log("intent expired, clearing");
-    await clearPendingIntent();
+    await clearPendingIntent(projectId);
     return null;
   }
   return intent;
 }
 
-async function clearPendingIntent() {
-  await chrome.storage.local.remove(PENDING_INVEST_INTENT_KEY);
-}
-
-function matchesCurrentProject(projectId) {
-  if (!projectId) return false;
-  const match = location.pathname.match(/^\/project\/([^/]+)/);
-  return match ? match[1] === projectId : false;
+async function clearPendingIntent(projectId) {
+  const { [PENDING_INVEST_INTENTS_KEY]: intents = {} } = await chrome.storage.local.get(PENDING_INVEST_INTENTS_KEY);
+  if (!intents || typeof intents !== "object" || !(projectId in intents)) {
+    return;
+  }
+  delete intents[projectId];
+  if (Object.keys(intents).length === 0) {
+    await chrome.storage.local.remove(PENDING_INVEST_INTENTS_KEY);
+  } else {
+    await chrome.storage.local.set({ [PENDING_INVEST_INTENTS_KEY]: intents });
+  }
 }
 
 async function runAutoInvest(intent) {
