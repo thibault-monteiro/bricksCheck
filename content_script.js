@@ -7,6 +7,7 @@ const APP_ORIGIN = "https://app.bricks.co";
 const PENDING_INVEST_INTENT_KEY = "pendingInvestIntent";
 const PENDING_INVEST_INTENT_TTL_MS = 2 * 60 * 1000;
 const AUTO_INVEST_FLOW_TIMEOUT_MS = 15000;
+const PROJECT_WATCH_SESSION_KEY = "projectWatchSession";
 
 // Set to true to log each step of the auto-invest flow to the page console.
 // Useful while the heuristics are stabilising; safe to flip off in prod.
@@ -39,27 +40,43 @@ window.addEventListener("message", (event) => {
 (async () => {
   try {
     const intent = await readPendingIntent();
-    if (!intent) {
-      return;
-    }
-    if (!matchesCurrentProject(intent.projectId)) {
-      log("intent does not match current project", intent.projectId, "vs", location.pathname);
-      return;
-    }
-    if (intent.amountEuros <= 0) {
-      log("intent has zero amount, clearing");
-      await clearPendingIntent();
-      return;
+    if (intent) {
+      if (!matchesCurrentProject(intent.projectId)) {
+        log("intent does not match current project", intent.projectId, "vs", location.pathname);
+      } else if (intent.amountEuros <= 0) {
+        log("intent has zero amount, clearing");
+        await clearPendingIntent();
+      } else {
+        log("intent matches, starting auto-invest", intent);
+        // Consume the intent immediately so we never replay it.
+        await clearPendingIntent();
+        await runAutoInvest(intent);
+        return;
+      }
     }
 
-    log("intent matches, starting auto-invest", intent);
-    // Consume the intent immediately so we never replay it.
-    await clearPendingIntent();
-    await runAutoInvest(intent);
+    await startProjectWatchFromStorage();
   } catch (error) {
     console.warn("[BricksCheck] auto-invest failed:", error?.message || error);
   }
 })();
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "PROJECT_WATCH_SESSION_UPDATED") {
+    startProjectWatch(message.session)
+      .then((started) => sendResponse({ ok: true, started }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "PROJECT_WATCH_STOPPED") {
+    stopProjectWatchWatcher();
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  return false;
+});
 
 async function readPendingIntent() {
   const { [PENDING_INVEST_INTENT_KEY]: intent } = await chrome.storage.local.get(PENDING_INVEST_INTENT_KEY);
@@ -78,6 +95,263 @@ async function clearPendingIntent() {
   await chrome.storage.local.remove(PENDING_INVEST_INTENT_KEY);
 }
 
+let projectWatchState = null;
+
+async function startProjectWatchFromStorage() {
+  const { [PROJECT_WATCH_SESSION_KEY]: session } = await chrome.storage.local.get(PROJECT_WATCH_SESSION_KEY);
+  await startProjectWatch(session);
+}
+
+async function startProjectWatch(session) {
+  if (!isUsableProjectWatchSession(session)) {
+    stopProjectWatchWatcher();
+    return false;
+  }
+
+  if (!matchesCurrentProject(session.projectId)) {
+    log("project watch does not match current page", session.projectId, "vs", location.pathname);
+    stopProjectWatchWatcher();
+    return false;
+  }
+
+  stopProjectWatchWatcher();
+  projectWatchState = {
+    session,
+    stopped: false,
+    attemptInFlight: false,
+    observer: null,
+    intervalId: null
+  };
+
+  attachProjectWatchObservers(projectWatchState);
+  window.addEventListener("pagehide", stopProjectWatchWatcher, { once: true });
+
+  showWatchIndicator(session);
+  log("project watch armed", session);
+  void attemptProjectWatchBuy();
+  return true;
+}
+
+function attachProjectWatchObservers(state) {
+  const attempt = () => {
+    void attemptProjectWatchBuy();
+  };
+  state.observer = new MutationObserver(attempt);
+  state.observer.observe(document.documentElement, {
+    attributes: true,
+    childList: true,
+    subtree: true,
+    attributeFilter: ["aria-disabled", "class", "disabled", "style"]
+  });
+  state.intervalId = setInterval(attempt, 250);
+}
+
+function detachProjectWatchObservers(state) {
+  if (state.observer) {
+    state.observer.disconnect();
+    state.observer = null;
+  }
+  if (state.intervalId !== null) {
+    clearInterval(state.intervalId);
+    state.intervalId = null;
+  }
+}
+
+function isUsableProjectWatchSession(session) {
+  if (!session || typeof session !== "object") {
+    return false;
+  }
+  if (!session.active) {
+    return false;
+  }
+  if (Number(session.expiresAt || 0) <= Date.now()) {
+    return false;
+  }
+  return Number(session.amountEuros || 0) > 0 && Number(session.bricksToInvest || 0) > 0;
+}
+
+async function attemptProjectWatchBuy() {
+  const state = projectWatchState;
+  if (!state || state.stopped || state.attemptInFlight) {
+    return;
+  }
+  if (!isUsableProjectWatchSession(state.session) || !matchesCurrentProject(state.session.projectId)) {
+    stopProjectWatchWatcher();
+    return;
+  }
+
+  const investNowButton = findEnabledInvestNowButton();
+  if (!investNowButton) {
+    return;
+  }
+
+  state.attemptInFlight = true;
+  // Pause the watchers during the buy flow (avoid re-entrancy) but keep the
+  // session + on-page indicator alive so we can re-arm afterwards.
+  detachProjectWatchObservers(state);
+  log("project watch detected enabled invest button", investNowButton);
+
+  try {
+    await chrome.runtime.sendMessage({
+      type: "PROJECT_WATCH_BUY_STARTED",
+      projectId: state.session.projectId
+    });
+  } catch (error) {
+    log("PROJECT_WATCH_BUY_STARTED failed:", error?.message || error);
+  }
+
+  await runAutoInvest(state.session);
+
+  try {
+    await chrome.runtime.sendMessage({
+      type: "PROJECT_WATCH_BUY_ATTEMPTED",
+      projectId: state.session.projectId,
+      autopilot: Boolean(state.session.autopilot)
+    });
+  } catch (error) {
+    log("PROJECT_WATCH_BUY_ATTEMPTED failed:", error?.message || error);
+  }
+
+  // Autopilot completes the purchase on its own, so we re-arm to grab another
+  // brick if one frees up later. Semi-auto leaves the final click to the user,
+  // so we stop (re-arming would fight the user's own modal interaction).
+  if (state.session.autopilot) {
+    await rearmAfterBuy();
+  } else {
+    stopProjectWatchWatcher();
+  }
+}
+
+/**
+ * After an autopilot purchase, wait for the buy opportunity to close (the
+ * "Investir" button no longer clickable) and then re-arm the watch, so the
+ * user gets at most one grab per availability window without ever re-clicking
+ * "Armer". Bails if the watch was stopped or expired meanwhile.
+ */
+async function rearmAfterBuy() {
+  // 1) Wait for the current availability window to close.
+  if (!(await waitForInvestButtonIdle())) return;
+
+  // 2) Ask the SW to re-activate the session for the next window.
+  let freshSession = null;
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "PROJECT_WATCH_REARMED",
+      projectId: projectWatchState.session.projectId
+    });
+    freshSession = response?.session || null;
+  } catch (error) {
+    log("PROJECT_WATCH_REARMED failed:", error?.message || error);
+  }
+
+  if (!projectWatchState || projectWatchState.stopped) {
+    return;
+  }
+
+  // 3) The REARM round-trip is async; the button may have re-enabled meanwhile.
+  // Re-confirm the window is closed so re-arming never instantly re-buys the
+  // same window — the next grab must come from a fresh enable edge seen by the
+  // observer, not from whatever state the button happens to be in right now.
+  if (!(await waitForInvestButtonIdle())) return;
+
+  await startProjectWatch(freshSession || { ...projectWatchState.session, active: true });
+}
+
+// Resolves true once the "Investir" button is no longer clickable (the buy
+// window has closed) so the watch can safely re-arm; resolves false if the
+// watch was torn down or the session expired while waiting.
+async function waitForInvestButtonIdle() {
+  while (true) {
+    if (!projectWatchState || projectWatchState.stopped) return false;
+    if (!isUsableProjectWatchSession(projectWatchState.session)) return false;
+    if (!findEnabledInvestNowButton()) return true;
+    await wait(500);
+  }
+}
+
+function stopProjectWatchWatcher() {
+  hideWatchIndicator();
+
+  const state = projectWatchState;
+  if (!state) {
+    return;
+  }
+
+  state.stopped = true;
+  if (state.observer) {
+    state.observer.disconnect();
+  }
+  if (state.intervalId !== null) {
+    clearInterval(state.intervalId);
+  }
+  projectWatchState = null;
+}
+
+const WATCH_BADGE_ID = "bricks-check-watch-badge";
+const WATCH_TITLE_PREFIX = "🟢 ";
+let watchTitleObserver = null;
+
+// Visual cue, in the watched tab, that the project watch is armed: a floating
+// pill in the page + a 🟢 prefix in the tab title (so the tab is spottable in
+// the tab strip without switching to it). Both are removed when the watch
+// stops, fires, or expires.
+function showWatchIndicator(session) {
+  if (!document.getElementById(WATCH_BADGE_ID)) {
+    const badge = document.createElement("div");
+    badge.id = WATCH_BADGE_ID;
+    badge.textContent = `🟢 Bricks Check · vigie armée${session?.projectName ? ` · ${session.projectName}` : ""}`;
+    badge.style.cssText = [
+      "position:fixed !important",
+      "bottom:16px !important",
+      "right:16px !important",
+      "z-index:2147483647 !important",
+      "display:block !important",
+      "background:#0f6b4f !important",
+      "color:#fff !important",
+      "font:600 13px/1.3 system-ui,-apple-system,sans-serif !important",
+      "padding:8px 14px !important",
+      "border-radius:9999px !important",
+      "box-shadow:0 2px 10px rgba(0,0,0,.35) !important",
+      "pointer-events:none !important",
+      "user-select:none !important",
+      "max-width:60vw !important",
+      "white-space:nowrap !important",
+      "overflow:hidden !important",
+      "text-overflow:ellipsis !important"
+    ].join(";");
+    (document.body || document.documentElement).appendChild(badge);
+  }
+
+  applyWatchTitlePrefix();
+  if (!watchTitleObserver) {
+    const titleEl = document.querySelector("title");
+    if (titleEl) {
+      watchTitleObserver = new MutationObserver(applyWatchTitlePrefix);
+      watchTitleObserver.observe(titleEl, { childList: true, characterData: true, subtree: true });
+    }
+  }
+}
+
+function applyWatchTitlePrefix() {
+  if (!document.title.startsWith(WATCH_TITLE_PREFIX)) {
+    document.title = WATCH_TITLE_PREFIX + document.title;
+  }
+}
+
+function hideWatchIndicator() {
+  const badge = document.getElementById(WATCH_BADGE_ID);
+  if (badge) {
+    badge.remove();
+  }
+  if (watchTitleObserver) {
+    watchTitleObserver.disconnect();
+    watchTitleObserver = null;
+  }
+  if (document.title.startsWith(WATCH_TITLE_PREFIX)) {
+    document.title = document.title.slice(WATCH_TITLE_PREFIX.length);
+  }
+}
+
 function matchesCurrentProject(projectId) {
   if (!projectId) return false;
   const match = location.pathname.match(/^\/project\/([^/]+)/);
@@ -89,7 +363,7 @@ async function runAutoInvest(intent) {
 
   // Step 1: click "Investir maintenant" (the big page-level button).
   log("step 1: looking for 'Investir maintenant' button");
-  const investNowButton = await waitForElement(findInvestNowButton, { until: deadline });
+  const investNowButton = await waitForElement(findEnabledInvestNowButton, { until: deadline });
   if (!investNowButton) {
     log("step 1 FAILED: button not found");
     return;
@@ -175,6 +449,68 @@ async function runAutoInvest(intent) {
   }
   log("step 7 OK, clicking final 'Investir' button", finalInvestButton);
   clickElement(finalInvestButton);
+
+  // Step 8: close the success / confirmation popup so the page returns to the
+  // project view, leaving the watch free to re-arm and grab another brick.
+  await wait(600);
+  await closeConfirmationPopup(Date.now() + 5000);
+}
+
+/**
+ * Best-effort close of the post-purchase confirmation popup: click a close /
+ * dismiss control if we can find one, then press Escape as a fallback for
+ * dialog libraries that close on Escape.
+ */
+async function closeConfirmationPopup(until) {
+  const closeButton = await waitForElement(findCloseButton, { until });
+  if (closeButton) {
+    log("step 8: closing confirmation popup", closeButton);
+    clickElement(closeButton);
+    await wait(300);
+  } else {
+    log("step 8: no close button found, falling back to Escape");
+  }
+  if (findVisibleDialog()) {
+    pressEscape();
+  }
+}
+
+const CLOSE_LABEL_KEYWORDS = ["fermer", "close", "terminer", "c'est noté", "cest note"];
+
+function findVisibleDialog() {
+  const dialogs = document.querySelectorAll("[role='dialog'], dialog, [aria-modal='true']");
+  for (const dialog of dialogs) {
+    if (isVisible(dialog)) return dialog;
+  }
+  return null;
+}
+
+function findCloseButton() {
+  const dialog = findVisibleDialog();
+  const root = dialog || document;
+  const buttons = root.querySelectorAll("button, [role='button'], [aria-label]");
+  for (const button of buttons) {
+    if (!isVisible(button) || isDisabled(button)) continue;
+    const label = (button.getAttribute("aria-label") || "").toLowerCase();
+    const text = normalizedText(button);
+    if (CLOSE_LABEL_KEYWORDS.some((kw) => label.includes(kw) || text === kw)) {
+      return button;
+    }
+    if (text === "×" || text === "✕" || label.includes("×")) {
+      return button;
+    }
+  }
+  return null;
+}
+
+function pressEscape() {
+  const targets = [document.activeElement, document.body, document];
+  for (const target of targets) {
+    if (!target) continue;
+    const init = { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true };
+    target.dispatchEvent(new KeyboardEvent("keydown", init));
+    target.dispatchEvent(new KeyboardEvent("keyup", init));
+  }
 }
 
 /**
@@ -226,6 +562,19 @@ function findInvestNowButton() {
     }
   }
   return null;
+}
+
+function findEnabledInvestNowButton() {
+  const button = findInvestNowButton();
+  return button && !isDisabled(button) ? button : null;
+}
+
+function isDisabled(element) {
+  if (!element) return true;
+  if (element.disabled === true) return true;
+  if (element.getAttribute("aria-disabled") === "true") return true;
+  const className = typeof element.className === "string" ? element.className.toLowerCase() : "";
+  return className.includes("disabled");
 }
 
 /**

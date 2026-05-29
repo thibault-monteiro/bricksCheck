@@ -65,6 +65,17 @@
           </span>
         </label>
 
+        <label class="check danger">
+          <input id="autoConfirmInvestmentPlan" type="checkbox">
+          <span>
+            <strong>Confirmation auto</strong> — valider tout seul les
+            investissements automatiques en attente sur la page Investissement
+            automatique. L'extension ouvre la page en arrière-plan si besoin.
+            <strong>Engage votre argent sur les briques pré-allouées, sans
+            confirmation manuelle.</strong>
+          </span>
+        </label>
+
         <div class="actions">
           <button id="saveButton" type="button">Enregistrer</button>
           <button id="checkNowButton" type="button" class="secondary">Tester maintenant</button>
@@ -72,6 +83,23 @@
         </div>
 
         <p id="feedbackText" class="feedback" role="status"></p>
+      </section>
+
+      <section class="panel project-overrides-panel">
+        <div class="setting-row">
+          <div>
+            <h2>Objectifs par projet</h2>
+            <p id="projectOverridesStatus">Chargement des projets configurables...</p>
+          </div>
+          <button id="refreshProjectOverridesButton" type="button" class="secondary compact">Actualiser</button>
+        </div>
+
+        <div class="threshold-summary">
+          <span>Seuil global</span>
+          <strong id="globalThresholdPreview">-- bricks</strong>
+        </div>
+
+        <div id="projectOverridesList" class="project-overrides-list"></div>
       </section>
 
       <section class="panel">

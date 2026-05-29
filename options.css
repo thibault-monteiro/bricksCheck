@@ -159,6 +159,11 @@ button.secondary {
   color: #2f6f5e;
 }
 
+button.compact {
+  min-height: 34px;
+  padding: 6px 10px;
+}
+
 button:disabled {
   cursor: wait;
   opacity: 0.6;
@@ -177,6 +182,104 @@ button:disabled {
   font-weight: 600;
   line-height: 1.35;
   padding: 10px 11px;
+}
+
+.threshold-summary {
+  align-items: center;
+  background: #f7f4ee;
+  border: 1px solid #ebe5da;
+  border-radius: 6px;
+  color: #343a46;
+  display: flex;
+  font-size: 13px;
+  justify-content: space-between;
+  line-height: 1.35;
+  padding: 10px 12px;
+}
+
+.threshold-summary strong {
+  color: #1f5f50;
+  font-size: 13px;
+}
+
+.project-overrides-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.project-overrides-empty {
+  color: #667080;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.project-override {
+  align-items: center;
+  border-top: 1px solid #f0ebe2;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) 116px 104px;
+  padding: 12px 0;
+}
+
+.project-override:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.project-override:last-child {
+  padding-bottom: 0;
+}
+
+.project-override-info {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.project-override-name {
+  color: #171a1f;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+a.project-override-name:hover {
+  color: #2f6f5e;
+  text-decoration: underline;
+}
+
+.project-override-meta,
+.project-override-preview {
+  color: #667080;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.project-override-field {
+  align-items: center;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.project-override-field span {
+  color: #59616f;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.project-override-field input {
+  min-height: 34px;
+  padding: 6px 8px;
+}
+
+.project-override-preview {
+  font-weight: 700;
+  text-align: right;
 }
 
 .disclaimer {
@@ -242,6 +345,19 @@ button:disabled {
     display: grid;
     grid-template-columns: 1fr;
   }
+
+  .project-override {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .project-override-field {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .project-override-preview {
+    text-align: left;
+  }
 }
 
 @media (prefers-color-scheme: dark) {
@@ -281,5 +397,37 @@ button:disabled {
     background: #172521;
     border-color: #2f5047;
     color: #bce3d6;
+  }
+
+  .threshold-summary {
+    background: #171a1d;
+    border-color: #363a40;
+    color: #e4e0d8;
+  }
+
+  .threshold-summary strong {
+    color: #bce3d6;
+  }
+
+  .project-overrides-empty,
+  .project-override-meta,
+  .project-override-preview {
+    color: #aeb6c2;
+  }
+
+  .project-override {
+    border-top-color: #30343a;
+  }
+
+  .project-override-name {
+    color: #f3f0ea;
+  }
+
+  a.project-override-name:hover {
+    color: #bce3d6;
+  }
+
+  .project-override-field span {
+    color: #aeb6c2;
   }
 }

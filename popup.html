@@ -30,6 +30,26 @@
         <div id="availableProjects" class="projects" hidden></div>
       </section>
 
+      <section class="section">
+        <div class="watch-header">
+          <p class="projects-title">Vigie onglet projet</p>
+          <span id="projectWatchMode" class="watch-mode"></span>
+        </div>
+        <p id="projectWatchStatus" class="muted">Aucun onglet projet armé.</p>
+        <div class="watch-actions">
+          <button id="startProjectWatchButton" class="watch-button" type="button">Armer l'onglet actif</button>
+          <button id="stopProjectWatchButton" class="text-button" type="button" hidden>Arrêter</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="history-header">
+          <p class="projects-title">Historique des alertes</p>
+          <button id="clearHistoryButton" class="text-button" type="button">Effacer</button>
+        </div>
+        <div id="alertHistory" class="history"></div>
+      </section>
+
       <p class="disclaimer">
         Extension indépendante de Bricks.co. Ne constitue pas un conseil en investissement.
       </p>

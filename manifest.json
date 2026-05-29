@@ -2,15 +2,17 @@
   "manifest_version": 3,
   "name": "Bricks Check",
   "description": "Extension Chrome qui surveille les collectes Bricks.co et notifie les projets sous votre seuil de briques.",
-  "version": "0.9.0",
+  "version": "0.18.0",
   "permissions": [
     "alarms",
+    "idle",
     "notifications",
     "offscreen",
     "storage"
   ],
   "host_permissions": [
     "https://app.bricks.co/*",
+    "https://app-legacy.bricks.co/*",
     "https://api.bricks.co/*"
   ],
   "content_scripts": [
@@ -32,6 +34,16 @@
         "content_script.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://app-legacy.bricks.co/investment-plan*"
+      ],
+      "js": [
+        "investment_plan.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
   "action": {

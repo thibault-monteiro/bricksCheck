@@ -5,9 +5,11 @@ export const DEFAULT_OPTIONS = {
   enabled: false,
   intervalMinutes: 1,
   ownedThreshold: 100,
+  projectThresholdOverrides: {},
   notifyWhenBelowThreshold: true,
   playSoundOnNotification: false,
-  autopilotEnabled: false
+  autopilotEnabled: false,
+  autoConfirmInvestmentPlan: false
 };
 
 export const AUTH_TOKEN_KEY = "bricksAuthToken";

@@ -2,14 +2,19 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildProjectInvestPlan,
   bricksToInvestEuros,
   buildOwnedBricksByPropertyId,
   dedupeProjects,
   getProjectDataScore,
+  getProjectOwnedThreshold,
   isProjectUrl,
   localizeText,
+  mapConfigurableBricksApiProject,
+  mapConfigurableBricksApiProjects,
   mapBricksApiProject,
   mapBricksApiProjects,
+  normalizeBrickThreshold,
   sanitizeBricksUrl
 } from "../shared/projects.js";
 
@@ -197,6 +202,92 @@ describe("mapBricksApiProjects", () => {
   });
 });
 
+describe("mapConfigurableBricksApiProjects", () => {
+  it("maps upcoming projects for per-project settings", () => {
+    const startsAt = new Date(Date.now() + 86400000).toISOString();
+    const result = mapConfigurableBricksApiProject({
+      id: "upcoming-1",
+      name: { fr: "Résidence Bientôt" },
+      funding: { startedAt: startsAt }
+    });
+
+    assert.ok(result);
+    assert.equal(result.id, "upcoming-1");
+    assert.equal(result.name, "Résidence Bientôt");
+    assert.equal(result.status, "Prochainement");
+    assert.equal(result.url, "https://app.bricks.co/project/upcoming-1");
+    assert.equal(result.startsAt, new Date(startsAt).getTime());
+  });
+
+  it("maps current ongoing projects for per-project settings", () => {
+    const startsAt = new Date(Date.now() - 86400000).toISOString();
+    const result = mapConfigurableBricksApiProject({
+      id: "ongoing-1",
+      name: "Résidence Ouverte",
+      funding: { startedAt: startsAt }
+    }, { source: "ongoing" });
+
+    assert.ok(result);
+    assert.equal(result.id, "ongoing-1");
+    assert.equal(result.status, "Collecte en cours");
+  });
+
+  it("returns ongoing and upcoming entries", () => {
+    const futureStart = new Date(Date.now() + 86400000).toISOString();
+    const pastStart = new Date(Date.now() - 86400000).toISOString();
+    const catalog = {
+      ongoing: {
+        projects: [
+          { id: "future", name: "Future", funding: { startedAt: futureStart } },
+          { id: "current", name: "Current", funding: { startedAt: pastStart } }
+        ]
+      },
+      upcoming: {
+        projects: [
+          { id: "upcoming", name: "Upcoming", funding: { startedAt: futureStart } }
+        ]
+      }
+    };
+
+    const result = mapConfigurableBricksApiProjects(catalog);
+    assert.deepEqual(result.map((project) => project.id).sort(), ["current", "future", "upcoming"]);
+    assert.equal(result.find((project) => project.id === "current").status, "Collecte en cours");
+  });
+});
+
+describe("project threshold overrides", () => {
+  it("normalizes brick thresholds", () => {
+    assert.equal(normalizeBrickThreshold({ threshold: 50 }), 50);
+    assert.equal(normalizeBrickThreshold("42.9"), 42);
+    assert.equal(normalizeBrickThreshold(-1), null);
+    assert.equal(normalizeBrickThreshold("not a number"), null);
+  });
+
+  it("uses per-project overrides before the global threshold", () => {
+    const project = { id: "p1", name: "Project" };
+    const options = {
+      ownedThreshold: 100,
+      projectThresholdOverrides: {
+        p1: { threshold: 50 }
+      }
+    };
+
+    assert.equal(getProjectOwnedThreshold(project, options), 50);
+  });
+
+  it("falls back to the global threshold", () => {
+    const project = { id: "p2", name: "Project" };
+    const options = {
+      ownedThreshold: 100,
+      projectThresholdOverrides: {
+        p1: { threshold: 50 }
+      }
+    };
+
+    assert.equal(getProjectOwnedThreshold(project, options), 100);
+  });
+});
+
 describe("bricksToInvestEuros", () => {
   it("multiplies bricks by default 10 EUR price", () => {
     assert.equal(bricksToInvestEuros(5), 50);
@@ -221,6 +312,88 @@ describe("bricksToInvestEuros", () => {
     assert.equal(bricksToInvestEuros(5, 0), 50);
     assert.equal(bricksToInvestEuros(5, -1), 50);
     assert.equal(bricksToInvestEuros(5, NaN), 50);
+  });
+});
+
+describe("buildProjectInvestPlan", () => {
+  const catalog = {
+    ongoing: {
+      projects: [
+        {
+          id: "p1",
+          name: { fr: "Résidence Armée" },
+          funding: { brickPrice: 1000 },
+          ownedBricks: 12
+        }
+      ]
+    }
+  };
+
+  it("targets a single brick for a catalog project (grab mode)", () => {
+    const plan = buildProjectInvestPlan("p1", catalog, null);
+
+    assert.ok(plan);
+    assert.equal(plan.projectId, "p1");
+    assert.equal(plan.projectName, "Résidence Armée");
+    assert.equal(plan.ownedBricks, 12);
+    assert.equal(plan.bricksToInvest, 1);
+    assert.equal(plan.brickPrice, 10);
+    assert.equal(plan.amountEuros, 10);
+    assert.equal(plan.url, "https://app.bricks.co/project/p1");
+    assert.ok(!("ownedThreshold" in plan));
+  });
+
+  it("reads owned bricks from the portfolio when the catalog lacks them", () => {
+    const withoutOwnedBricks = {
+      ongoing: {
+        projects: [
+          {
+            id: "p1",
+            name: "Projet Portfolio",
+            funding: { brickPrice: 1000 }
+          }
+        ]
+      }
+    };
+    const plan = buildProjectInvestPlan(
+      "p1",
+      withoutOwnedBricks,
+      { ongoing: [{ propertyId: "p1", brickCount: 7 }] }
+    );
+
+    assert.equal(plan.ownedBricks, 7);
+    assert.equal(plan.bricksToInvest, 1);
+  });
+
+  it("arms a full project absent from the catalog using portfolio + name hint", () => {
+    const plan = buildProjectInvestPlan(
+      "full-1",
+      catalog,
+      { ongoing: [{ propertyId: "full-1", brickCount: 1 }] },
+      { nameHint: "Hôtel Bastide des Oliviers" }
+    );
+
+    assert.ok(plan);
+    assert.equal(plan.projectId, "full-1");
+    assert.equal(plan.projectName, "Hôtel Bastide des Oliviers");
+    assert.equal(plan.ownedBricks, 1);
+    assert.equal(plan.bricksToInvest, 1);
+    assert.equal(plan.brickPrice, 10);
+    assert.equal(plan.amountEuros, 10);
+    assert.equal(plan.url, "https://app.bricks.co/project/full-1");
+  });
+
+  it("falls back to a generic name when the absent project has no hint", () => {
+    const plan = buildProjectInvestPlan("full-2", catalog, null);
+
+    assert.ok(plan);
+    assert.equal(plan.projectName, "Projet Bricks");
+    assert.equal(plan.ownedBricks, 0);
+    assert.equal(plan.bricksToInvest, 1);
+  });
+
+  it("returns null only when the project id is empty", () => {
+    assert.equal(buildProjectInvestPlan("", catalog, null), null);
   });
 });
 
