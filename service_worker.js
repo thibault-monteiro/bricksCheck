@@ -1057,6 +1057,18 @@ async function startProjectWatch(message) {
     throw new Error("Projet introuvable dans l'API Bricks.");
   }
 
+  // Objective cap: when the "below threshold" mode is on, the armed watch must
+  // not push the owned-brick count past the per-project (or global) objective.
+  // null = no cap (threshold mode off, or objective of 0/unset → the user armed
+  // this tab deliberately to grab, so don't block them with an empty objective).
+  const rawThreshold = options.notifyWhenBelowThreshold
+    ? getProjectOwnedThreshold({ id: plan.projectId, name: plan.projectName }, options)
+    : null;
+  const ownedThreshold = rawThreshold !== null && rawThreshold > 0 ? rawThreshold : null;
+  if (ownedThreshold !== null && Number(plan.ownedBricks) >= ownedThreshold) {
+    throw new Error(`Objectif déjà atteint (${plan.ownedBricks}/${ownedThreshold} briques). Vigie non armée.`);
+  }
+
   const now = Date.now();
   const session = {
     active: true,
@@ -1066,6 +1078,7 @@ async function startProjectWatch(message) {
     projectName: plan.projectName,
     url: isProjectUrl(target.url) ? sanitizeBricksUrl(target.url) : plan.url,
     ownedBricks: plan.ownedBricks,
+    ownedThreshold,
     bricksToInvest: plan.bricksToInvest,
     brickPrice: plan.brickPrice,
     amountEuros: plan.amountEuros,
@@ -1263,12 +1276,36 @@ async function markProjectWatchAttempted(message, sender) {
 async function reactivateProjectWatch(message, sender) {
   const session = await assertProjectWatchSender(message, sender, { includeInactive: true });
   const now = Date.now();
+
+  // Count the buy we just made (optimistic: we don't re-fetch the portfolio).
+  const ownedBricks = Number(session.ownedBricks || 0) + 1;
+  const cap = session.ownedThreshold;
+
+  // Objective reached → disarm instead of re-arming, so the watch never pushes
+  // the owned count past the user's objective.
+  if (cap !== null && cap !== undefined && ownedBricks >= cap) {
+    const reachedSession = {
+      ...session,
+      active: false,
+      status: "objectiveReached",
+      ownedBricks,
+      stoppedAt: now,
+      message: `Objectif atteint (${ownedBricks}/${cap} briques). Vigie désarmée.`
+    };
+    await chrome.storage.local.set({
+      [PROJECT_WATCH_SESSION_KEY]: reachedSession,
+      [LAST_PROJECT_WATCH_KEY]: reachedSession
+    });
+    return reachedSession;
+  }
+
   const rearmedSession = {
     ...session,
     active: true,
     status: "watching",
     attached: true,
     rearmedAt: now,
+    ownedBricks,
     message: "Achat effectué, vigie ré-armée — en attente du prochain créneau."
   };
 
