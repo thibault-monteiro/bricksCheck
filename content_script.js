@@ -164,9 +164,6 @@ function isUsableProjectWatchSession(session) {
   if (!session.active) {
     return false;
   }
-  if (Number(session.expiresAt || 0) <= Date.now()) {
-    return false;
-  }
   return Number(session.amountEuros || 0) > 0 && Number(session.bricksToInvest || 0) > 0;
 }
 

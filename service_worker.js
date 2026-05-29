@@ -23,7 +23,6 @@ const MAX_TOKEN_REFRESH_RETRIES = 1;
 const PENDING_INVEST_INTENT_KEY = "pendingInvestIntent";
 const PENDING_INVEST_INTENT_TTL_MS = 2 * 60 * 1000;
 const PROJECT_WATCH_SESSION_KEY = "projectWatchSession";
-const PROJECT_WATCH_SESSION_TTL_MS = 30 * 60 * 1000;
 const LAST_PROJECT_WATCH_KEY = "lastProjectWatch";
 const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
 const PLAY_SOUND_MESSAGE_TYPE = "BRICKS_PLAY_SOUND";
@@ -1072,7 +1071,6 @@ async function startProjectWatch(message) {
     amountEuros: plan.amountEuros,
     autopilot: Boolean(options.autopilotEnabled),
     createdAt: now,
-    expiresAt: now + PROJECT_WATCH_SESSION_TTL_MS,
     attached: false,
     message: "Onglet projet armé."
   };
@@ -1221,10 +1219,6 @@ async function getProjectWatchStatus() {
     return null;
   }
 
-  if (session.active && Number(session.expiresAt || 0) <= Date.now()) {
-    return stopProjectWatch("Vigie expirée.");
-  }
-
   return session;
 }
 
@@ -1275,7 +1269,6 @@ async function reactivateProjectWatch(message, sender) {
     status: "watching",
     attached: true,
     rearmedAt: now,
-    expiresAt: now + PROJECT_WATCH_SESSION_TTL_MS,
     message: "Achat effectué, vigie ré-armée — en attente du prochain créneau."
   };
 
