@@ -273,6 +273,9 @@ export function sortConfigurableProjects(projects) {
  */
 export function normalizeBrickThreshold(value) {
   const rawValue = value && typeof value === "object" ? value.threshold : value;
+  if (rawValue === null || rawValue === undefined || rawValue === "") {
+    return null;
+  }
   const threshold = Number(rawValue);
   if (!Number.isFinite(threshold) || threshold < 0) {
     return null;
@@ -297,6 +300,28 @@ export function getProjectOwnedThreshold(project, options) {
   }
 
   return normalizeBrickThreshold(options?.ownedThreshold) ?? 0;
+}
+
+/**
+ * Whether the user has explicitly ignored a project: no notifications and no
+ * brick purchases (autopilot or armed watch) should ever target it.
+ *
+ * @param {BricksProject|ConfigurableBricksProject} project
+ * @param {*} options
+ * @returns {boolean}
+ */
+export function isProjectIgnored(project, options) {
+  const overrides = options?.projectThresholdOverrides || {};
+  const keys = [project?.id, project?.name].filter(Boolean);
+
+  for (const key of keys) {
+    const override = overrides[key];
+    if (override && typeof override === "object" && override.ignored === true) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 /**

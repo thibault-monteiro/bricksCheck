@@ -5,6 +5,7 @@ import {
   bricksToInvestEuros,
   dedupeProjects,
   getProjectOwnedThreshold,
+  isProjectIgnored,
   isProjectUrl,
   mapConfigurableBricksApiProjects,
   mapBricksApiProjects,
@@ -800,6 +801,10 @@ function generateUniqueId() {
 }
 
 function shouldNotifyProject(project, options) {
+  if (isProjectIgnored(project, options)) {
+    return false;
+  }
+
   const hasAvailableBricks = Number(project.availableBricks) > 0;
   if (!hasAvailableBricks) {
     return false;
@@ -1055,6 +1060,10 @@ async function startProjectWatch(message) {
 
   if (!plan) {
     throw new Error("Projet introuvable dans l'API Bricks.");
+  }
+
+  if (isProjectIgnored({ id: plan.projectId, name: plan.projectName }, options)) {
+    throw new Error("Projet ignoré — retirez l'ignore dans les objectifs pour l'acheter.");
   }
 
   // Objective cap: when the "below threshold" mode is on, the armed watch must

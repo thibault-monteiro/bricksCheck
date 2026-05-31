@@ -8,6 +8,7 @@ import {
   dedupeProjects,
   getProjectDataScore,
   getProjectOwnedThreshold,
+  isProjectIgnored,
   isProjectUrl,
   localizeText,
   mapConfigurableBricksApiProject,
@@ -261,6 +262,22 @@ describe("project threshold overrides", () => {
     assert.equal(normalizeBrickThreshold("42.9"), 42);
     assert.equal(normalizeBrickThreshold(-1), null);
     assert.equal(normalizeBrickThreshold("not a number"), null);
+    assert.equal(normalizeBrickThreshold(null), null);
+    assert.equal(normalizeBrickThreshold(undefined), null);
+    assert.equal(normalizeBrickThreshold(""), null);
+    assert.equal(normalizeBrickThreshold({ threshold: null }), null);
+  });
+
+  it("falls back to the global threshold for ignored-only overrides", () => {
+    const project = { id: "p1", name: "Project" };
+    const options = {
+      ownedThreshold: 100,
+      projectThresholdOverrides: {
+        p1: { threshold: null, ignored: true }
+      }
+    };
+
+    assert.equal(getProjectOwnedThreshold(project, options), 100);
   });
 
   it("uses per-project overrides before the global threshold", () => {
@@ -285,6 +302,34 @@ describe("project threshold overrides", () => {
     };
 
     assert.equal(getProjectOwnedThreshold(project, options), 100);
+  });
+});
+
+describe("isProjectIgnored", () => {
+  it("matches an ignored override by id or name", () => {
+    const options = {
+      projectThresholdOverrides: {
+        p1: { ignored: true },
+        Other: { threshold: 5, ignored: true }
+      }
+    };
+
+    assert.equal(isProjectIgnored({ id: "p1", name: "P1" }, options), true);
+    assert.equal(isProjectIgnored({ id: "px", name: "Other" }, options), true);
+  });
+
+  it("is false when no override, ignored is falsy, or threshold-only", () => {
+    const options = {
+      projectThresholdOverrides: {
+        p1: { threshold: 50 },
+        p2: { ignored: false }
+      }
+    };
+
+    assert.equal(isProjectIgnored({ id: "p1" }, options), false);
+    assert.equal(isProjectIgnored({ id: "p2" }, options), false);
+    assert.equal(isProjectIgnored({ id: "absent" }, options), false);
+    assert.equal(isProjectIgnored({ id: "p1" }, {}), false);
   });
 });
 

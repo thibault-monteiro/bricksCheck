@@ -219,8 +219,26 @@ button:disabled {
   border-top: 1px solid #f0ebe2;
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(0, 1fr) 116px 104px;
+  grid-template-columns: minmax(0, 1fr) 116px auto 104px;
   padding: 12px 0;
+}
+
+.project-override.is-ignored .project-override-info,
+.project-override.is-ignored .project-override-field {
+  opacity: 0.5;
+}
+
+.project-override-ignore {
+  align-items: center;
+  cursor: pointer;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.project-override-ignore span {
+  color: #59616f;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .project-override:first-child {
@@ -427,7 +445,8 @@ a.project-override-name:hover {
     color: #bce3d6;
   }
 
-  .project-override-field span {
+  .project-override-field span,
+  .project-override-ignore span {
     color: #aeb6c2;
   }
 }

@@ -164,19 +164,37 @@ function renderProjectThresholdOverrides() {
     input.min = "0";
     input.step = "1";
     input.placeholder = `${formatInteger(readGlobalThreshold())}`;
-    input.value = override ? String(override.threshold) : "";
-    input.addEventListener("input", () => {
+    input.value = override && override.threshold !== null ? String(override.threshold) : "";
+
+    const ignoreField = document.createElement("label");
+    ignoreField.className = "project-override-ignore";
+
+    const ignoreInput = document.createElement("input");
+    ignoreInput.type = "checkbox";
+    ignoreInput.checked = Boolean(override?.ignored);
+
+    const ignoreLabel = document.createElement("span");
+    ignoreLabel.textContent = "Ignorer";
+
+    ignoreField.replaceChildren(ignoreInput, ignoreLabel);
+
+    const onRowChange = () => {
+      applyIgnoredState(row, ignoreInput.checked, input);
       projectThresholdOverrides = readProjectThresholdOverrides();
       updateProjectOverridesStatus(rows.length);
       renderProjectOverrideStatusPreview(row, input);
-    });
+    };
+
+    input.addEventListener("input", onRowChange);
+    ignoreInput.addEventListener("change", onRowChange);
 
     field.replaceChildren(label, input);
 
     const preview = document.createElement("span");
     preview.className = "project-override-preview";
 
-    row.replaceChildren(info, field, preview);
+    row.replaceChildren(info, field, ignoreField, preview);
+    applyIgnoredState(row, ignoreInput.checked, input);
     renderProjectOverrideStatusPreview(row, input);
     elements.projectOverridesList.append(row);
   }
@@ -190,7 +208,7 @@ function updateProjectOverridesStatus(rowCount = getProjectOverrideRows().length
 }
 
 function countVisibleProjectOverrides() {
-  return [...elements.projectOverridesList.querySelectorAll(".project-override input")]
+  return [...elements.projectOverridesList.querySelectorAll('.project-override input[type="number"]')]
     .filter((input) => normalizeProjectThresholdInput(input.value) !== null)
     .length;
 }
@@ -244,8 +262,18 @@ function getProjectStatusRank(project) {
   return 3;
 }
 
+function applyIgnoredState(row, ignored, input) {
+  row.classList.toggle("is-ignored", ignored);
+  input.disabled = ignored;
+}
+
 function renderProjectOverrideStatusPreview(row, input) {
   const preview = row.querySelector(".project-override-preview");
+  const ignoreInput = row.querySelector('input[type="checkbox"]');
+  if (ignoreInput?.checked) {
+    preview.textContent = "Ignoré";
+    return;
+  }
   const threshold = normalizeProjectThresholdInput(input.value);
   preview.textContent =
     threshold === null
@@ -273,20 +301,23 @@ function readProjectThresholdOverrides() {
   const rows = elements.projectOverridesList.querySelectorAll(".project-override");
 
   for (const row of rows) {
-    const input = row.querySelector("input");
+    const input = row.querySelector('input[type="number"]');
+    const ignoreInput = row.querySelector('input[type="checkbox"]');
     const projectId = row.dataset.projectId;
     if (!input || !projectId) {
       continue;
     }
 
     const threshold = normalizeProjectThresholdInput(input.value);
-    if (threshold === null) {
+    const ignored = Boolean(ignoreInput?.checked);
+    if (threshold === null && !ignored) {
       delete next[projectId];
       continue;
     }
 
     next[projectId] = {
       threshold,
+      ignored,
       name: row.dataset.projectName || "Projet Bricks",
       status: row.dataset.projectStatus || "Prochainement",
       lastSeenAt: Number(row.dataset.projectLastSeenAt || 0) || null,
@@ -311,12 +342,14 @@ function sanitizeProjectThresholdOverrides(overrides) {
     const threshold = normalizeProjectThresholdInput(
       override && typeof override === "object" ? override.threshold : override
     );
-    if (threshold === null) {
+    const ignored = Boolean(override && typeof override === "object" && override.ignored);
+    if (threshold === null && !ignored) {
       continue;
     }
 
     sanitized[projectId] = {
       threshold,
+      ignored,
       name: override?.name || "Projet Bricks",
       status: override?.status || "Objectif enregistré",
       lastSeenAt: Number(override?.lastSeenAt || 0) || null,
